@@ -4,7 +4,7 @@
 
 **已采用 `jackotom/hongguo-drama` 最新红果播放接口适配。** 截至 2026-10-14，该项目最新提交为 [`5a12c884`](https://github.com/jackotom/hongguo-drama/commit/5a12c8840ec54fe1a7b10d0519cf64b4875b1983)，本版按该版本移植访客标识与请求签名，并已验证漫剧、真人短剧及下一集播放。接口可用性仍受上游状态影响。
 
-[下载 APK 与源码](https://github.com/seanminjie-del/hongguoTV-livingroom/releases) · [原生工程与构建](kotlin-tv/README.md) · [分析与验证记录](kotlin-tv/RELEASE_0.11.0-local.md) · [第三方来源](kotlin-tv/NOTICE.md)
+[下载 APK 与源码](https://github.com/seanminjie-del/hongguoTV-livingroom/releases) · [原生工程与构建](kotlin-tv/README.md) · [更新验证记录](kotlin-tv/RELEASE_0.12.0-local.md) · [第三方来源](kotlin-tv/NOTICE.md)
 
 ![首页实际运行截图](docs/screenshots/home.png)
 
@@ -23,7 +23,7 @@
 
 当前版本 **0.12.0-local**，APK 为本地 debug 签名，包名 `com.hongguotv.nativeapp`。先手动覆盖安装此版，后续同签名更新可自动发现和下载，安装仍需系统确认。可覆盖本仓库 0.10/0.11 本地包并保留记录；其他正式签名的同包名版可能无法覆盖，应先备份片单，避免卸载丢失记录。本仓库未配置云端正式签名发布。
 
-本版已通过 105 项核心测试、Android 构建与 Lint（0 errors、33 warnings），并在 Android TV API36 模拟器验证更新渠道迁移及关闭自动更新偏好保留。0.11 已验证三轮频道切换、跨区焦点、详情/搜索返回、分页去重与遥控器翻页、个人片单增删、真实视频画面、暂停恢复、切换下一集、真人短剧播放及 1.4 倍字号。**实体电视、Android 8 本轮运行及全站/全剧播放尚未验收。**
+本版已通过 105 项核心测试、Android 构建与 Lint（0 errors、33 warnings）、GitHub CI，并在 Android TV API36 模拟器完成自动发现、公开下载、签名校验、系统授权/安装和记录保留验证；关闭自动更新后仍可手动检查，最新版不会重复下载。0.11 的频道、搜索、真实播放和大字号验收见 [原记录](kotlin-tv/RELEASE_0.11.0-local.md)。**实体电视、Android 8 本轮运行及全站/全剧播放尚未验收。**
 
 ## 构建
 
