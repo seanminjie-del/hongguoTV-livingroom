@@ -25,12 +25,23 @@ class AppUpdatesTest {
         assertTrue(update.newerThan(9, 26)); assertFalse(update.newerThan(10001, 36)); assertFalse(update.newerThan(10002, 36)); assertFalse(update.newerThan(9, 25))
     }
     @Test fun downloadUrlUsesOnlyFixedRepositoryAndValidatedNames() {
-        assertEquals("https://github.com/N3urda/hongguoTV-updates/releases/download/kotlin-v0.9.0-build.1/hongguotv-kotlin-0.9.0-build.1-android8.apk", update().downloadUrl)
+        assertEquals("https://github.com/seanminjie-del/hongguoTV-livingroom/releases/download/kotlin-v0.9.0-build.1/hongguotv-kotlin-0.9.0-build.1-android8.apk", update().downloadUrl)
         for (value in listOf("../../bad.apk", "evil.apk", "https://example.com/evil.apk", "hongguotv-kotlin-1/2-android8.apk")) {
             val o = json(); o.getJSONObject("apk").put("name", value)
             assertThrows(IllegalArgumentException::class.java) { AppUpdate.parse(o.toString()) }
         }
         assertThrows(IllegalArgumentException::class.java) { AppUpdate.parse(json().put("tag", "../../other").toString()) }
+    }
+    @Test fun publishedLivingRoomAssetsAreAcceptedWithoutAllowingTraversal() {
+        val manifest=json().put("versionCode",12).put("versionName","0.12.0-local").put("tag","tv-v0.12.0-local")
+        manifest.getJSONObject("apk").put("name","hongguotv-0.12.0-local-android8.apk")
+        val update=AppUpdate.parse(manifest.toString())
+        assertEquals("https://github.com/seanminjie-del/hongguoTV-livingroom/releases/download/tv-v0.12.0-local/hongguotv-0.12.0-local-android8.apk",update.downloadUrl)
+        assertTrue(update.newerThan(11,36)); assertFalse(update.newerThan(12,36))
+        for(name in listOf("../hongguotv-0.12.0-local-android8.apk","hongguotv-0.12.0-local-android8.apk?token=x","hongguotv-0.12.0-local-android8.apk/other")) {
+            manifest.getJSONObject("apk").put("name",name)
+            assertThrows(IllegalArgumentException::class.java) { AppUpdate.parse(manifest.toString()) }
+        }
     }
     @Test fun rejectOtherPackageAndInvalidSchema() {
         assertThrows(IllegalArgumentException::class.java) { AppUpdate.parse(json().put("packageName", "other.app").toString()) }

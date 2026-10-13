@@ -47,6 +47,12 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
     private var retryAfter = 0L
     private var promptedCode = 0L
     private val auto get() = preferences.getBoolean("automatic", true)
+    init {
+        if (preferences.getString("channel", null) != AppUpdate.REPOSITORY) {
+            preferences.edit().putString("channel", AppUpdate.REPOSITORY)
+                .remove("last_attempt").remove("deferred_code").remove("deferred_until").apply()
+        }
+    }
     private val poll = object : Runnable {
         override fun run() {
             if (!active) return
