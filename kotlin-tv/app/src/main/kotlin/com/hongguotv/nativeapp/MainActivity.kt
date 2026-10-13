@@ -21,6 +21,9 @@ import androidx.media3.common.*
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.exoplayer.source.preload.DefaultPreloadManager
+import androidx.media3.exoplayer.source.preload.PreloadException
+import androidx.media3.exoplayer.source.preload.PreloadManagerListener
 import androidx.media3.ui.PlayerView
 import com.hongguotv.core.*
 import java.util.concurrent.Executors
@@ -154,6 +157,7 @@ class MainActivity: Activity() {
     private var group=0
     private var synopsisExpanded=false
     private var player: ExoPlayer?=null
+    private var preloadManager: DefaultPreloadManager?=null
     private var video: RemoteVideo?=null
     private var playbackReady=false
     private var pausedForLifecycle=false
@@ -857,10 +861,11 @@ class MainActivity: Activity() {
         library.setWatched(data.series.id,false)
         val selectedIndex=index.coerceIn(0,data.episodes.lastIndex)
         val prefetched=if(position==0L && !recovering) preparedNext.take("${data.episodes[selectedIndex]}:${library.maxQuality}") else null
+        val prefetchedSource=if(prefetched!=null) preloadManager?.getMediaSource(videoItem(data.episodes[selectedIndex])) else null
         val claimedHttp=if(prefetched!=null) prefetchHttp.also { prefetchHttp=null } else null
         saveProgress(); library.flush(); invalidatePage(); favoriteMonitor.stop(); releaseCatalogViews()
         if(reuse) {
-            cancelRecovery(); cancelPrefetch(); tvTools.close()
+            cancelRecovery(); cancelPrefetch(keepMediaSource=prefetchedSource!=null); tvTools.close()
             episodePanel?.dismiss(); episodePanel=null; speedDialog?.dismiss(); speedDialog=null
             playerListener?.let { player?.removeListener(it) }; playerListener=null
             player?.stop(); player?.clearMediaItems()
@@ -903,7 +908,22 @@ class MainActivity: Activity() {
             val p=player ?: run {
                 val load=DefaultLoadControl.Builder().setBufferDurationsMs(15000,30000,1000,2000).setTargetBufferBytes(12*1024*1024).build()
                 val renderers=androidx.media3.exoplayer.DefaultRenderersFactory(this).setEnableDecoderFallback(true)
-                ExoPlayer.Builder(this,renderers).setLoadControl(load).build().also {
+                // Shared builder keeps sample preloading and playback on the same allocator/looper.
+                val builder=DefaultPreloadManager.Builder(this) { _: Int -> DefaultPreloadManager.PreloadStatus.specifiedRangeLoaded(3000) }
+                    .setRenderersFactory(renderers).setLoadControl(load)
+                preloadManager=builder.build().apply {
+                    addListener(object: PreloadManagerListener {
+                        override fun onCompleted(mediaItem: MediaItem) {
+                            android.util.Log.i("HongguoTV","Media3 next episode samples buffered id=${mediaItem.mediaId}")
+                        }
+                        override fun onError(exception: PreloadException) {
+                            // A speculative failure must not interrupt the current episode.
+                            if(exception.mediaItem.mediaId!=player?.currentMediaItem?.mediaId) remove(exception.mediaItem)
+                            android.util.Log.w("HongguoTV","Media3 preload failed; next episode will use normal preparation")
+                        }
+                    })
+                }
+                builder.buildExoPlayer().also {
                     player=it; playerView?.player=it
                     it.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(),true)
                     it.setHandleAudioBecomingNoisy(true)
@@ -920,6 +940,7 @@ class MainActivity: Activity() {
                             return
                         }
                         playbackReady=true
+                        if(firstReady) preloadManager?.remove(videoItem(requestedId))
                         if(firstReady) { firstReady=false; readySince=android.os.SystemClock.elapsedRealtime(); android.util.Log.i("HongguoTV","Playback ready episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${readySince-playbackStarted}") }
                         if(hud.visibility==View.VISIBLE) updatePlaybackText()
                     }
@@ -934,7 +955,7 @@ class MainActivity: Activity() {
                 override fun onRenderedFirstFrame() {
                     if(active() && firstFrame) {
                         firstFrame=false
-                        android.util.Log.i("HongguoTV","Playback first frame episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime()-playbackStarted}")
+                        android.util.Log.i("HongguoTV","Playback first frame episode=${episodeIndex+1} preloaded=${prefetched!=null} media3Source=${prefetchedSource!=null} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime()-playbackStarted}")
                     }
                 }
                 override fun onIsPlayingChanged(playing: Boolean) { if(active()) { if(hud.visibility==View.VISIBLE) showHud(); syncMediaSession() } }
@@ -943,16 +964,19 @@ class MainActivity: Activity() {
                 override fun onPlayerError(error: PlaybackException) { if(active()) playerFailure(error) }
             }
             playerListener=listener; p.addListener(listener)
-            val source=ProgressiveMediaSource.Factory { VideoDataSource(remote) }.createMediaSource(MediaItem.Builder().setMediaId(requestedId).setUri("hongguotv://episode/$requestedId").setMimeType(MimeTypes.VIDEO_MP4).build())
+            val source=prefetchedSource ?: videoSource(remote,requestedId)
             p.setMediaSource(source); p.seekTo(position.coerceAtLeast(0)); p.prepare(); p.playWhenReady=foreground && requestedAutoplay && !pausedForLifecycle && episodePanel==null
         }, { problem -> playerFailure(problem) })
     }
+    private fun videoItem(id: String)=MediaItem.Builder().setMediaId(id).setUri("hongguotv://episode/$id").setMimeType(MimeTypes.VIDEO_MP4).build()
+    private fun videoSource(remote: RemoteVideo,id: String)=ProgressiveMediaSource.Factory { VideoDataSource(remote) }.createMediaSource(videoItem(id))
     private fun closeTransport(http: okhttp3.OkHttpClient?) {
         if(http==null) return
         // Closing an idle TLS connection can write close_notify; keep it off the UI thread.
         networkCleanup.execute { http.dispatcher.cancelAll(); http.connectionPool.evictAll(); http.dispatcher.executorService.shutdown() }
     }
-    private fun cancelPrefetch() {
+    private fun cancelPrefetch(keepMediaSource: Boolean=false) {
+        if(!keepMediaSource) preloadManager?.reset()
         prefetchScope?.cancel(); prefetchScope=null
         preparedNext.clear(); prefetchJob?.cancel(true); prefetchJob=null
         closeTransport(prefetchHttp); prefetchHttp=null; prefetchedFor=""
@@ -968,6 +992,7 @@ class MainActivity: Activity() {
         if(prefetchAttempts>=3 || (prefetchAttempts>0 && now-prefetchAttemptAt<15_000) || connectivity.isActiveNetworkMetered || !networkAvailable()) return
         cancelPrefetch(); prefetchedFor=key; prefetchAttemptAt=now; prefetchAttempts++
         val ticket=preparedNext.begin(key)
+        val playbackTicket=generation
         val http=okhttp3.OkHttpClient.Builder().connectTimeout(8,java.util.concurrent.TimeUnit.SECONDS).readTimeout(15,java.util.concurrent.TimeUnit.SECONDS).callTimeout(20,java.util.concurrent.TimeUnit.SECONDS).build()
         val source=ContentRepository(http); prefetchHttp=http
         val scope=RequestScope(); prefetchScope=scope
@@ -977,7 +1002,16 @@ class MainActivity: Activity() {
                 val prepared=scope.run {
                     RemoteVideo(http,source.stream(id,quality)).also { remote=it; it.warm() }
                 }
-                if(preparedNext.complete(ticket,key,prepared)) android.util.Log.i("HongguoTV","Next episode prepared near end")
+                if(preparedNext.complete(ticket,key,prepared)) main.post {
+                    if(foreground && generation==playbackTicket && player===p && prefetchedFor==key && preparedNext.isFresh(key)) {
+                        preloadManager?.apply {
+                            add(videoSource(prepared,id),episodeIndex+1)
+                            setCurrentPlayingIndex(episodeIndex)
+                            invalidate()
+                        }
+                        android.util.Log.i("HongguoTV","Next episode prepared near end; Media3 sample preload started")
+                    }
+                }
             } catch(_: Exception) { remote?.close() }
         }
     }
@@ -1190,6 +1224,7 @@ class MainActivity: Activity() {
     }
     private fun releasePlayer() {
         cancelRecovery(); cancelPrefetch(); mediaSession.deactivate(); tvTools.close()
+        preloadManager?.release(); preloadManager=null
         val wasForeground=foreground; foreground=false
         val oldPanel=episodePanel; episodePanel=null; oldPanel?.dismiss(); foreground=wasForeground
         speedDialog?.dismiss(); speedDialog=null

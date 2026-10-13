@@ -4,7 +4,7 @@
 
 **已采用 `jackotom/hongguo-drama` 最新红果播放接口适配。** 截至 2026-10-14，该项目最新提交为 [`5a12c884`](https://github.com/jackotom/hongguo-drama/commit/5a12c8840ec54fe1a7b10d0519cf64b4875b1983)，本版按该版本移植访客标识与请求签名，并已验证漫剧、真人短剧及下一集播放。接口可用性仍受上游状态影响。
 
-[下载 APK 与源码](https://github.com/seanminjie-del/hongguoTV-livingroom/releases) · [原生工程与构建](kotlin-tv/README.md) · [更新验证记录](kotlin-tv/RELEASE_0.12.0-local.md) · [第三方来源](kotlin-tv/NOTICE.md)
+[下载 APK 与源码](https://github.com/seanminjie-del/hongguoTV-livingroom/releases) · [原生工程与构建](kotlin-tv/README.md) · [预加载验证记录](kotlin-tv/RELEASE_0.13.0-local.md) · [第三方来源](kotlin-tv/NOTICE.md)
 
 ![首页实际运行截图](docs/screenshots/home.png)
 
@@ -15,15 +15,16 @@
 - **搜索备用来源**：App 搜索无响应时检索官网公开片库，显示进度、范围与分页状态。本轮每类公开片库 800 部；这不等于红果 App 全站完整覆盖。
 - **遥控器操作**：频道确认后切换，右键进内容、第一列左键回频道，各频道独立记忆所选剧及滚动位置；详情和搜索返回恢复位置。搜索分页固定可见，末排下键进入分页、上键回结果；播放时确认暂停/恢复，下键选集，上键更多操作。
 - **原生播放**：MP4 分段读取、兼容编码选择、断点续播与选集；异常提供错误码和重试入口。
+- **Media3官方预加载**：本集接近结束时加载下一集开头3秒的音视频样本，换集复用已预加载媒体源；仅预载下一集，后台与低内存时清理。
 - **自动更新**：前台浏览时自动检查并下载本仓库新版，校验文件与签名后由系统确认安装；设置中可关闭自动更新或手动检查，播放时不打扰。[更新说明](kotlin-tv/AUTO_UPDATES.md)
 
 ![搜索实际运行截图](docs/screenshots/search.png)
 
 ## 安装与验证
 
-当前版本 **0.12.0-local**，APK 为本地 debug 签名，包名 `com.hongguotv.nativeapp`。先手动覆盖安装此版，后续同签名更新可自动发现和下载，安装仍需系统确认。可覆盖本仓库 0.10/0.11 本地包并保留记录；其他正式签名的同包名版可能无法覆盖，应先备份片单，避免卸载丢失记录。本仓库未配置云端正式签名发布。
+当前版本 **0.13.0-local**，APK 为本地 debug 签名，包名 `com.hongguotv.nativeapp`。已安装0.12可通过应用内更新获取；0.10/0.11首次需手动覆盖安装新渠道版本。安装仍需系统确认，可覆盖本仓库本地包并保留记录；其他正式签名的同包名版可能无法覆盖，应先备份片单，避免卸载丢失记录。本仓库未配置云端正式签名发布。
 
-本版已通过 105 项核心测试、Android 构建与 Lint（0 errors、33 warnings）、GitHub CI，并在 Android TV API36 模拟器完成自动发现、公开下载、签名校验、系统授权/安装和记录保留验证；关闭自动更新后仍可手动检查，最新版不会重复下载。0.11 的频道、搜索、真实播放和大字号验收见 [原记录](kotlin-tv/RELEASE_0.11.0-local.md)。**实体电视、Android 8 本轮运行及全站/全剧播放尚未验收。**
+本版通过105项核心测试、Android构建与Lint（0 errors、33 warnings）；Android TV API36模拟器完成漫剧/真人短剧共4次官方预加载换集、同源交接、暂停恢复、后台释放与低内存取消。结束到下一集首帧样本为227–338毫秒，不是旧版同条件对照。自动更新完整验收见[0.12记录](kotlin-tv/RELEASE_0.12.0-local.md)，频道/搜索/大字号验收见[0.11记录](kotlin-tv/RELEASE_0.11.0-local.md)。**实体电视、Android8本轮运行及全站/全剧播放尚未验收。**
 
 ## 构建
 
