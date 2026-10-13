@@ -5,8 +5,6 @@ internal object VendorConstants {
     const val VIDEO_UA = "com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
     const val APP_UA = "com.phoenix.read/72232 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)"
     val device = linkedMapOf(
-        "iid" to "1905892595382586",
-        "device_id" to "1905892595378490",
         "ac" to "wifi",
         "channel" to "update_64",
         "aid" to "8662",

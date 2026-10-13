@@ -39,6 +39,10 @@ class RequestScope {
 
     companion object {
         private val current = ThreadLocal<RequestScope>()
+        fun ensureActive() {
+            val owner=current.get()
+            if(Thread.currentThread().isInterrupted || (owner!=null && synchronized(owner) { owner.cancelled })) throw IOException("请求已取消")
+        }
         fun <T> execute(call: Call, consume: (Response) -> T): T {
             val owner = current.get()
             owner?.attach(call)

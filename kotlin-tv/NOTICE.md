@@ -9,6 +9,14 @@
 
 `kotlin-tv/` 原生应用源码和派生实现以 GPL-3.0-only 发布，许可证全文见 `LICENSE`。发布 APK 时同时提供本分支对应源码、Gradle 包装器和构建说明。APK 不包含 Node、React Native、JavaScript 引擎或该 JavaScript 源文件。`tools/signing-oracle.cjs` 仅为开发期生成对照测试数据的工具，不参与应用构建或运行。
 
+2026-10-13 的访客签名适配参考：
+
+- jackotom/hongguo-drama，`src/native/app-source.js`
+- https://github.com/jackotom/hongguo-drama/tree/5a12c8840ec54fe1a7b10d0519cf64b4875b1983
+- GPL-3.0-only；它同样基于上面的 drpys / N3urda 签名算法。
+- 本版移植：每次请求生成本地临时访客编号，在 URL 和签名中使用相同编号；会话 nonce 与启动时间不再固定；响应必须包含所选分集，不能替换成其他集。保留已验证的 hash branch 0。
+- `tools/visitor-signing-oracle.cjs` 可用上述固定版本源码生成独立对照数据；仅开发期使用，APK 无 Node 依赖。
+
 其他依赖：
 
 - ZXing core（本机生成手机输入与更新二维码）：https://github.com/zxing/zxing — Apache-2.0

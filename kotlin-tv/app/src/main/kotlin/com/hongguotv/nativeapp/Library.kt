@@ -138,14 +138,14 @@ class Library(context: Context) {
         val age = System.currentTimeMillis() - (homeSavedAt[type] ?: return null)
         return homes[type].takeIf { age in 0..7 * 24 * 60 * 60 * 1000L }
     }
-    fun cacheHome(type: ContentType, items: List<Series>, hasMore: Boolean) {
+    fun cacheHome(type: ContentType, items: List<Series>, hasMore: Boolean, loadedPages: Int=1) {
         state()
         if (items.isEmpty()) return
         val now = System.currentTimeMillis()
-        val retained = items.take(30).map { it.copy(description = it.description.take(1500)) }
-        homes[type] = CatalogPage(retained, hasMore)
+        val retained = items.take(90).map { it.copy(description = it.description.take(1500)) }
+        homes[type] = CatalogPage(retained, hasMore,loadedPages=loadedPages)
         homeSavedAt[type] = now
-        homeWrites.submit(mapOf("home-${type.storedValue}" to { CatalogSnapshot.encode(retained, hasMore, now) }))
+        homeWrites.submit(mapOf("home-${type.storedValue}" to { CatalogSnapshot.encode(retained, hasMore, now,loadedPages) }))
     }
     var maxQuality: Int
         get() = state().settings.quality

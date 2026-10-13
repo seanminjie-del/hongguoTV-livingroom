@@ -11,23 +11,26 @@ import android.widget.*
 import com.hongguotv.core.Series
 
 /** Fixed text slots keep D-pad movement from resizing the content below the preview. */
-class SeriesPreview(context: Context): LinearLayout(context) {
+class SeriesPreview(context: Context,compact: Boolean=false): LinearLayout(context) {
     private fun label(size: Float,color: Int)=TextView(context).apply { textSize=size; setTextColor(color); includeFontPadding=false }
-    private val title=label(27f,TvStyle.text).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL) }
-    private val meta=label(12f,TvStyle.muted).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END }
+    private val title=label(if(compact) 20f else 25f,TvStyle.text).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL) }
+    private val meta=label(if(compact) 12f else 13f,TvStyle.muted).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END }
+    private val description=label(13f,TvStyle.muted).apply { minLines=2; maxLines=2; ellipsize=TextUtils.TruncateAt.END }
     init {
-        orientation=VERTICAL
+        orientation=HORIZONTAL; gravity=Gravity.CENTER_VERTICAL
         val dp=resources.displayMetrics.density
-        setPadding(0,(7*dp).toInt(),0,(12*dp).toInt())
-        addView(title)
-        addView(meta,LayoutParams(-1,-2).apply { topMargin=(5*dp).toInt() })
+        setPadding(0,((if(compact) 5 else 8)*dp).toInt(),0,(8*dp).toInt())
+        val details=LinearLayout(context).apply { orientation=VERTICAL; addView(title); addView(meta,LayoutParams(-1,-2).apply { topMargin=(4*dp).toInt() }) }
+        addView(details,LayoutParams(0,-2,1f))
+        if(resources.displayMetrics.widthPixels/dp>=900 && resources.configuration.fontScale<=1.2f) addView(description,LayoutParams((260*dp).toInt(),-2).apply { leftMargin=(28*dp).toInt() })
         show(null,"")
     }
     fun show(series: Series?,status: String) {
-        val nextTitle=series?.title ?: "下一段好故事，从这里开始"
-        val nextMeta=if(series==null) "浏览片库，选择你想看的剧" else listOf(status,series.badge,series.tags).flatMap { it.split('·') }.map(String::trim).filter { it.isNotBlank() && !it.all(Char::isDigit) }.distinct().joinToString("  /  ")
+        val nextTitle=series?.title ?: "选一部，开始看"
+        val nextMeta=if(series==null) "确认查看剧集 · 长按管理片单" else listOf(status,series.badge,series.tags).flatMap { it.split('·') }.map(String::trim).filter { it.isNotBlank() && !it.all(Char::isDigit) }.distinct().joinToString("  /  ")
         if(title.text.toString()!=nextTitle) title.text=nextTitle
         if(meta.text.toString()!=nextMeta) meta.text=nextMeta
+        description.text=series?.description.orEmpty().replace('\n',' ')
     }
 }
 
@@ -47,6 +50,7 @@ class HomeScreen(
     private data class Card(val key: String,val view: LinearLayout,val image: ImageView?,val title: TextView,val label: TextView,val progress: ProgressBar?,var entry: Entry?,var pending: Boolean=false)
     private data class Row(val key: String,val block: LinearLayout,val horizontal: HorizontalScrollView,val cards: List<Card>)
     private val accent=TvStyle.accent
+    private val columns=if(resources.configuration.fontScale>1.2f || resources.displayMetrics.widthPixels/resources.displayMetrics.density<900) 6 else 7
     private fun dp(n: Int)=(n*resources.displayMetrics.density).toInt()
     private fun shape(focus: Boolean)=TvStyle.card(context,focus)
     private fun label(value: String,size: Float,color: Int=TvStyle.text)=TextView(context).apply { text=value; textSize=size; setTextColor(color); includeFontPadding=false }
@@ -82,7 +86,7 @@ class HomeScreen(
         val card=cards["$shelfKey:${entry.series.id}"] ?: return false
         if(card.entry?.series?.cover!=entry.series.cover) { card.image?.setImageDrawable(null) }
         card.entry=entry; card.title.text=entry.series.title; card.label.text=entry.label
-        card.progress?.apply { progress=entry.progress ?: 0; visibility=if(entry.progress==null) INVISIBLE else VISIBLE }
+        card.progress?.apply { progress=entry.progress ?: 0; visibility=if(entry.progress==null) GONE else VISIBLE }
         card.view.contentDescription="${shelves.firstOrNull { it.key==shelfKey }?.title.orEmpty()}，${entry.series.title}，${entry.label}"
         shelves=shelves.map { shelf -> if(shelf.key==shelfKey) shelf.copy(entries=shelf.entries.map { if(it.series.id==entry.series.id) entry else it }) else shelf }
         if(lastFocus==card.key) refreshSelection()
@@ -104,23 +108,22 @@ class HomeScreen(
         shelves.filter { it.entries.isNotEmpty() || it.more!=null }.forEach { shelf ->
             val block=LinearLayout(context).apply { orientation=VERTICAL }
             val heading=LinearLayout(context).apply { orientation=HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(2),dp(4),dp(2),dp(9)) }
-            heading.addView(View(context).apply { background=TvStyle.shape(context,accent,radius=2) },LayoutParams(dp(3),dp(14)).apply { rightMargin=dp(8) })
-            heading.addView(label(shelf.title,16f).apply { setTypeface(null,Typeface.BOLD) },LayoutParams(0,-2,1f))
-            heading.addView(label("左右选剧  ·  上下切换分区",10f,TvStyle.muted))
+            heading.addView(label(shelf.title,18f).apply { setTypeface(null,Typeface.BOLD) },LayoutParams(0,-2,1f))
+            heading.addView(label("${shelf.entries.size} 部  ·  左右选剧",12f,TvStyle.muted))
             block.addView(heading)
             val horizontal=HorizontalScrollView(context).apply { isHorizontalScrollBarEnabled=false; clipToPadding=false; setPadding(dp(2),dp(2),dp(2),dp(2)) }
             val line=LinearLayout(context).apply { orientation=HORIZONTAL; gravity=Gravity.TOP }
             horizontal.addView(line); block.addView(horizontal)
             val rowCards=mutableListOf<Card>()
             fun addCard(entry: Entry?,moreAction: (() -> Unit)?=null) {
-                val width=((resources.displayMetrics.widthPixels*.9f-dp(70))/6).toInt().coerceAtLeast(dp(100))
+                val width=((resources.displayMetrics.widthPixels*.9f-dp(14)*(columns-1))/columns).toInt().coerceAtLeast(dp(90))
                 val key=if(entry!=null) "${shelf.key}:${entry.series.id}" else "${shelf.key}:more"
                 val view=LinearLayout(context).apply { orientation=VERTICAL; id=View.generateViewId(); tag=key; isFocusable=true; isFocusableInTouchMode=true; setPadding(dp(4),dp(4),dp(4),dp(8)); background=shape(false) }
-                val image=if(entry!=null) ImageView(context).apply { scaleType=ImageView.ScaleType.FIT_CENTER; importantForAccessibility=IMPORTANT_FOR_ACCESSIBILITY_NO } else null
+                val image=if(entry!=null) ImageView(context).apply { scaleType=ImageView.ScaleType.FIT_CENTER; background=TvStyle.shape(context,TvStyle.surface,radius=6); clipToOutline=true; importantForAccessibility=IMPORTANT_FOR_ACCESSIBILITY_NO } else null
                 view.addView(image ?: label("›",36f).apply { gravity=Gravity.CENTER },LayoutParams(-1,((width-dp(8))/TvStyle.POSTER_ASPECT).toInt()))
-                val title=label(entry?.series?.title ?: "查看全部",14f).apply { minLines=2; maxLines=2; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(5),dp(3),0) }
+                val title=label(entry?.series?.title ?: "查看全部",14f).apply { minLines=2; maxLines=2; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(6),dp(3),0); typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL) }
                 val badge=label(entry?.label ?: shelf.title,12f,TvStyle.muted).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(2),0,0) }
-                val progress=ProgressBar(context,null,android.R.attr.progressBarStyleHorizontal).apply { max=100; progress=entry?.progress ?: 0; visibility=if(entry?.progress==null) INVISIBLE else VISIBLE; progressTintList=android.content.res.ColorStateList.valueOf(accent) }
+                val progress=ProgressBar(context,null,android.R.attr.progressBarStyleHorizontal).apply { max=100; progress=entry?.progress ?: 0; visibility=if(entry?.progress==null) GONE else VISIBLE; progressTintList=android.content.res.ColorStateList.valueOf(accent) }
                 view.addView(title); view.addView(badge); view.addView(progress,LayoutParams(-1,dp(3)).apply { topMargin=dp(4) })
                 val card=Card(key,view,image,title,badge,progress,entry)
                 view.contentDescription=entry?.let { "${shelf.title}，${it.series.title}，${it.label}" } ?: "查看全部${shelf.title}"
@@ -144,7 +147,7 @@ class HomeScreen(
             }
             shelf.entries.forEach { addCard(it) }
             shelf.more?.let { action -> addCard(null,action) }
-            contents.addView(block,LayoutParams(-1,-2).apply { bottomMargin=dp(16) }); rows+=Row(shelf.key,block,horizontal,rowCards)
+            contents.addView(block,LayoutParams(-1,-2).apply { bottomMargin=dp(12) }); rows+=Row(shelf.key,block,horizontal,rowCards)
         }
         if(cards.isEmpty()) contents.addView(label("还没有本机记录，热门剧加载后可选择观看。",15f).apply { setPadding(0,dp(16),0,dp(16)) })
         contents.addView(refresh,LayoutParams(-1,-2).apply { topMargin=dp(10) })
@@ -217,7 +220,7 @@ class HomeScreen(
         val row=rows.indexOfFirst { it.cards.any { card -> card.key==lastFocus } }.coerceAtLeast(0)
         val column=rows.getOrNull(row)?.cards?.indexOfFirst { it.key==lastFocus }?.coerceAtLeast(0) ?: 0
         rows.getOrNull(row)?.cards?.let { items -> for(index in (column-1).coerceAtLeast(0)..(column+6).coerceAtMost(items.lastIndex)) requestCover(items[index]) }
-        rows.getOrNull(row+1)?.cards?.take(6)?.forEach(::requestCover)
+        rows.getOrNull(row+1)?.cards?.take(columns)?.forEach(::requestCover)
     }
     private fun requestCover(card: Card) {
         val image=card.image ?: return
@@ -243,10 +246,7 @@ class HomeScreen(
     private fun fitArtwork() {
         if(height<=0) return
         rows.forEach { row ->
-            val textHeight=row.cards.maxOf { item -> item.view.paddingTop+item.view.paddingBottom+(1 until item.view.childCount).sumOf { child ->
-                val view=item.view.getChildAt(child); val params=view.layoutParams as LayoutParams
-                view.measuredHeight+params.topMargin+params.bottomMargin
-            } }
+            val textHeight=row.cards.maxOf { TvStyle.captionHeight(it.view) }
             val desired=((row.cards.first().view.width-dp(8))/TvStyle.POSTER_ASPECT).toInt()
             val imageHeight=minOf(desired,(height-row.block.getChildAt(0).measuredHeight-textHeight-dp(8)).coerceAtLeast(dp(48)))
             row.cards.forEach { card -> card.view.getChildAt(0).let { artwork -> if(artwork.layoutParams.height!=imageHeight) artwork.layoutParams=artwork.layoutParams.apply { height=imageHeight } } }

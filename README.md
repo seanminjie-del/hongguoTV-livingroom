@@ -1,12 +1,48 @@
-# hongguoTV
+# 红果 TV · 客厅片库
 
-当前分支提供 **Kotlin 原生独立 APK**：安装后联网即可使用，无需 Node / Docker。最低 Android 8.0，电视遥控器操作。
+面向 Android TV / 电视盒子的红果短剧与漫剧客户端，采用 **Kotlin 原生 View + Media3**。Android 8.0 起可用，安装 APK 后直接联网，无需部署 Node 或 Docker 服务。
 
-**[下载原生版 APK](https://github.com/N3urda/hongguoTV-updates/releases/latest)** · [原生版说明与构建](kotlin-tv/README.md)
+**已采用 `jackotom/hongguo-drama` 最新红果播放接口适配。** 截至 2026-10-14，该项目最新提交为 [`5a12c884`](https://github.com/jackotom/hongguo-drama/commit/5a12c8840ec54fe1a7b10d0519cf64b4875b1983)，本版按该版本移植访客标识与请求签名，并已验证漫剧、真人短剧及下一集播放。接口可用性仍受上游状态影响。
 
-0.9.0 增加应用内更新：推送原生代码后自动同步至公开发布仓库、构建签名 APK；电视在浏览时检查并下载新版，确认系统安装即可，无需逐次传文件。播放中不检查，覆盖安装保留本机记录。见 [自动更新说明](kotlin-tv/AUTO_UPDATES.md)。
+[下载 APK 与源码](https://github.com/seanminjie-del/hongguoTV-livingroom/releases) · [原生工程与构建](kotlin-tv/README.md) · [分析与验证记录](kotlin-tv/RELEASE_0.10.0-local.md) · [第三方来源](kotlin-tv/NOTICE.md)
 
-原生工程位于 `kotlin-tv/`，包名 `com.hongguotv.nativeapp`，可与旧版并存。以下为保留的 React Native 版说明。
+![首页实际运行截图](docs/screenshots/home.png)
+
+## 功能
+
+- **客厅片库首页**：深灰背景、珊瑚色焦点、多排完整海报。前三页内容按真实题材分架，保留续播、收藏更新与稍后看；本轮首页漫剧 60 部、短剧 72 部。
+- **搜索完整解析**：读取全部结果与分组，按剧集 ID 跨页去重，完整剧名优先；每页 24 条，剩余结果继续翻页，不按首屏数量截断。
+- **搜索备用来源**：App 搜索无响应时检索官网公开片库，显示进度、范围与分页状态。本轮每类公开片库 800 部；这不等于红果 App 全站完整覆盖。
+- **遥控器操作**：上下换排、左右选片，详情返回恢复原位置；播放时确认暂停/恢复，下键选集，上键更多操作。
+- **原生播放**：MP4 分段读取、兼容编码选择、断点续播与选集；异常提供错误码和重试入口。
+
+![搜索实际运行截图](docs/screenshots/search.png)
+
+## 安装与验证
+
+当前版本 **0.10.0-local**，APK 为本地 debug 签名，包名 `com.hongguotv.nativeapp`。若已有同包名正式签名版，可能无法直接覆盖；请先备份片单，避免卸载导致记录丢失。当前仓库没有配置正式签名发布或自动更新渠道。
+
+已通过 102 项核心测试、Android 构建与 Lint（0 errors、32 warnings），并在 Android TV API 36 / 1920×1080 模拟器验证三轮遥控器导航、搜索分页、真实视频画面、暂停恢复、切换下一集、真人短剧播放及 1.4 倍字号。**实体电视、Android 8 本轮运行及全站/全剧播放尚未验收。**
+
+## 构建
+
+需要 JDK 17、Android SDK 36。仓库根目录执行：
+
+```sh
+./kotlin-tv/gradlew -p kotlin-tv :core:test :app:assembleDebug :app:lintDebug --console=plain
+```
+
+APK 输出：`kotlin-tv/app/build/outputs/apk/debug/app-debug.apk`。
+
+## 来源与许可
+
+基于 [N3urda/hongguoTV](https://github.com/N3urda/hongguoTV) 改造，保留原生工程与旧 React Native / Node 源码。新取址适配参考 [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama)，签名与媒体处理算法同源于 [woshishiq1/drpys](https://github.com/woshishiq1/drpys)。
+
+原生应用及派生实现使用 **GPL-3.0-only**，见 [kotlin-tv/LICENSE](kotlin-tv/LICENSE) 和 [NOTICE](kotlin-tv/NOTICE.md)；其他原始目录按各自已有许可证。下载 APK 时可同时获取对应源码。非内容平台官方客户端。
+
+## 原仓库旧版资料
+
+以下为保留的 React Native / Node 版历史说明，其下载链接及发布流程不代表本仓库当前版本。
 
 ---
 

@@ -20,15 +20,25 @@ data class Series(val id: String, val title: String, val cover: String = "", val
 data class Detail(val series: Series, val episodes: List<String>)
 data class RankPosition(val rank: Int?, val heat: String)
 data class ComicRanking(val positions: Map<String,RankPosition>, val totalPages: Int, val updatedText: String)
-data class CatalogPage(val items: List<Series>, val hasMore: Boolean, val ranking: ComicRanking? = null)
+data class CatalogPage(val items: List<Series>, val hasMore: Boolean, val ranking: ComicRanking? = null, val loadedPages: Int=1, val notice: String="", val foundCount: Int=items.size)
 data class StreamInfo(val url: String, val key: ByteArray?, val quality: String)
 class SearchSessionExpiredException: IOException("搜索结果已过期，请从第 1 页重新搜索")
+class ProviderPlaybackException(val sourceCode: Int): IOException("片源暂不可播放（错误 $sourceCode）")
+private class EmptySearchResponseException: IOException("搜索接口未返回内容")
 
 class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).build(), private val clock: () -> Long = System::currentTimeMillis) {
     private val signer = Signer()
     private val site = "https://hongguoduanju.com"
     private data class SearchCursor(val searchId: String, val passback: String, val offset: Int?, val updatedAt: Long)
     private val searchCursors=linkedMapOf<Triple<ContentType,String,Int>,SearchCursor>()
+    private val websiteSearches=linkedMapOf<Pair<ContentType,String>,Long>()
+    private val catalogSearches=linkedMapOf<Pair<ContentType,String>,Long>()
+    private class TitleCatalog(var touched: Long) {
+        val items=linkedMapOf<String,Series>()
+        var nextPage=1
+        var complete=false
+    }
+    private val titleCatalogs=mutableMapOf<ContentType,TitleCatalog>()
     private fun text(url: String, signed: Signer.Request? = null): String {
         val request = Request.Builder().url(url).header("User-Agent",VendorConstants.VIDEO_UA).header("Accept-Language","zh-CN,zh;q=0.9")
         signed?.headers?.forEach { (k,v) -> request.header(k,v) }
@@ -58,23 +68,86 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     fun home(page: Int = 1, type: ContentType = ContentType.SHORT): CatalogPage {
         require(page in 1..100)
         if(type==ContentType.COMIC) return comicRanking(page)
-        val data=router("$site/category?tab=1&sort_type=1"+if(page>1) "&page=$page" else "")
+        return category(page,type)
+    }
+    private fun category(page: Int,type: ContentType): CatalogPage {
+        val path=if(type==ContentType.COMIC) "/category/comic-drama" else "/category?tab=1&sort_type=1"
+        val data=router("$site$path"+if(page>1) (if('?' in path) "&" else "?")+"page=$page" else "")
         val section=data.optJSONObject("category_page") ?: data.optJSONObject("category_$") ?: throw IOException("首页数据结构已变化")
         val rows=section.optJSONArray("recommendList") ?: section.optJSONObject("categoryData")?.optJSONArray("recommendList") ?: throw IOException("首页数据暂不可用")
         val items=valid(rows.objects().map(::card))
         val lastPage=section.optJSONObject("pagination")?.optInt("totalPages",100) ?: 100
+        if(section.optJSONObject("pagination")?.optInt("pageNum",page)!=page) throw IOException("片库分页信息异常")
         return CatalogPage(items,items.isNotEmpty() && page<minOf(lastPage,100))
     }
-    fun search(keyword: String, page: Int = 1, type: ContentType = ContentType.SHORT): CatalogPage {
+    fun discover(type: ContentType): CatalogPage {
+        val first=home(1,type)
+        val items=first.items.toMutableList()
+        var more=first.hasMore; var loaded=1; var notice=""
+        for(page in 2..3) {
+            if(!more) break
+            val next=try { home(page,type) } catch(e: Exception) {
+                RequestScope.ensureActive()
+                notice="部分内容未加载，刷新可重试"; break
+            }
+            items+=next.items; more=next.hasMore; loaded=page
+        }
+        return CatalogPage(valid(items).take(90),more,loadedPages=loaded,notice=notice)
+    }
+    fun search(keyword: String, page: Int = 1, type: ContentType = ContentType.SHORT,progress: ((Int)->Unit)?=null): CatalogPage {
         require(keyword.isNotBlank() && keyword.length<=80 && page in 1..100)
-        // The website search does not constrain content type. Never use it for comics.
-        if(type==ContentType.COMIC) return appSearch(keyword,page,type)
-        try { val result=appSearch(keyword,page,type); if(result.items.isNotEmpty() || !result.hasMore) return result } catch (e: Exception) { if(e is SearchSessionExpiredException) throw e; /* Website fallback for short dramas only. */ }
+        val key=type to keyword
+        val catalogSource=synchronized(catalogSearches) {
+            catalogSearches.entries.removeAll { clock()-it.value>300_000 || (page==1 && it.key==key) }
+            key in catalogSearches
+        }
+        if(catalogSource) return catalogTitleSearch(keyword,page,type,progress)
+        // A valid empty comic tab is authoritative; only an empty HTTP body uses the public catalog.
+        if(type==ContentType.COMIC) return try { appSearch(keyword,page,type) } catch(e: EmptySearchResponseException) {
+            RequestScope.ensureActive(); if(page>1) throw e; catalogTitleSearch(keyword,page,type,progress)
+        }
+        val website=synchronized(websiteSearches) {
+            websiteSearches.entries.removeAll { clock()-it.value>300_000 || (page==1 && it.key==key) }
+            key in websiteSearches
+        }
+        if(!website) try { return appSearch(keyword,page,type) } catch (e: Exception) {
+            RequestScope.ensureActive()
+            if(e is EmptySearchResponseException && page==1) return catalogTitleSearch(keyword,page,type,progress)
+            if(e is SearchSessionExpiredException) throw e
+            if(page>1) throw e // Never switch sources halfway through a result set.
+        }
         val data=router("$site/search/${Signer.encode(keyword)}?page=$page")
         val section=data.optJSONObject("search_(keyword)/page") ?: data.optJSONObject("search_page") ?: throw IOException("搜索数据暂不可用")
         val rows=section.optJSONArray("searchList") ?: throw IOException("搜索数据结构已变化")
         val items=valid(rows.objects().map(::card))
-        return CatalogPage(items,items.isNotEmpty() && page<100)
+        synchronized(websiteSearches) {
+            websiteSearches[key]=clock()
+            while(websiteSearches.size>6) websiteSearches.remove(websiteSearches.keys.first())
+        }
+        val totalPages=section.optJSONObject("pagination")?.optInt("totalPages",100) ?: 100
+        return CatalogPage(items,items.isNotEmpty() && page<minOf(totalPages,100))
+    }
+    @Synchronized private fun catalogTitleSearch(keyword: String,page: Int,type: ContentType,progress: ((Int)->Unit)?): CatalogPage {
+        val index=titleCatalogs[type]?.takeIf { clock()-it.touched in 0..600_000 }
+            ?: TitleCatalog(clock()).also { titleCatalogs[type]=it }
+        while(!index.complete) {
+            if(index.nextPage>100) throw IOException("官网片库超过检索上限，请稍后重试")
+            RequestScope.ensureActive()
+            val result=category(index.nextPage,type)
+            if(result.items.isEmpty()) throw IOException("官网片库数据不完整，请稍后重试")
+            RequestScope.ensureActive()
+            result.items.forEach { index.items.putIfAbsent(it.id,it) }
+            index.nextPage++; index.complete=!result.hasMore; index.touched=clock()
+            progress?.invoke(index.items.size)
+        }
+        val items=index.items.values.toList()
+        val matches=items.filter { SearchCatalog.relevance(it,keyword)<4 }.sortedBy { SearchCatalog.relevance(it,keyword) }
+        synchronized(catalogSearches) {
+            catalogSearches[type to keyword]=clock()
+            while(catalogSearches.size>6) catalogSearches.remove(catalogSearches.keys.first())
+        }
+        return CatalogPage(matches.drop((page-1)*24).take(24),page*24<matches.size,
+            notice="官网片库 · 已检索 ${items.size} 部")
     }
     private fun appSearch(keyword: String, page: Int, type: ContentType): CatalogPage {
         val values=VendorConstants.device.toMutableMap()
@@ -86,14 +159,16 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
             searchCursors.entries.removeAll { now-it.value.updatedAt>300000 || (page==1 && it.key.first==type && it.key.second==keyword) }
             searchCursors[Triple(type,keyword,page-1)]
         }
-        if(type==ContentType.COMIC && page>1 && cursor==null) throw SearchSessionExpiredException()
+        if(page>1 && cursor==null) throw SearchSessionExpiredException()
         cursor?.let {
             if(it.searchId.isNotBlank()) values["search_id"]=it.searchId
             if(it.passback.isNotBlank()) values["passback"]=it.passback
             it.offset?.takeIf { offset -> offset>=0 }?.let { offset -> values["offset"]=offset.toString() }
         }
         val signed=signer.sign("https://api5-normal-sinfonlinea.fqnovel.com/reading/bookapi/search/tab/v",values)
-        val data=JSONObject(text(signed.url,signed))
+        val response=text(signed.url,signed)
+        if(response.isBlank()) throw EmptySearchResponseException()
+        val data=try { JSONObject(response) } catch(e: org.json.JSONException) { throw IOException("搜索接口返回了无法读取的数据，请稍后重试",e) }
         if(data.optInt("code",-1)!=0) throw IOException("搜索接口暂不可用")
         val tabs=data.optJSONArray("search_tabs") ?: data.optJSONObject("data")?.optJSONArray("search_tabs") ?: throw IOException("搜索格式异常")
         val tab=tabs.objects().firstOrNull { it.optInt("tab_type")==type.searchTab } ?: throw IOException("${type.label}搜索暂不可用")
@@ -102,11 +177,15 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
             val cells=mutableListOf(cell)
             runCatching { JSONObject(cell.str("lynx_data")).optJSONArray("cell_data")?.objects() }.getOrNull()?.let { cells.addAll(it) }
             for(row in cells) {
-                val video=row.optJSONArray("video_data")?.objects()?.firstOrNull() ?: continue
+                val videos=row.optJSONArray("video_data")?.objects() ?: row.optJSONObject("video_data")?.let { listOf(it) } ?: emptyList()
+                for(video in videos) {
                 val id=video.str("series_id").ifEmpty { row.str("book_id").ifEmpty { row.str("search_result_id") } }
-                val title=row.optJSONObject("search_high_light")?.optJSONObject("title")?.str("text").orEmpty().ifEmpty { video.str("title").ifEmpty { row.str("cell_name") } }
+                val title=video.str("series_name").ifEmpty { video.str("series_title").ifEmpty { video.str("title").ifEmpty {
+                    if(videos.size==1) row.optJSONObject("search_high_light")?.optJSONObject("title")?.str("text").orEmpty().ifEmpty { row.str("cell_name") } else ""
+                } } }
                 val count=video.optInt("episode_cnt")
-                list+=Series(id,title,cleanUrl(video.str("cover").ifEmpty { video.str("cover_url") }),video.str("video_desc"),if(count>0) "全 $count 集" else video.str("rec_text"),video.str("sub_title"))
+                list+=Series(id,org.jsoup.Jsoup.parse(title).text(),cleanUrl(video.str("cover").ifEmpty { video.str("cover_url").ifEmpty { video.str("series_cover") } }),video.str("video_desc").ifEmpty { video.str("series_intro") },if(count>0) "全 $count 集" else video.str("rec_text"),video.str("sub_title"))
+                }
             }
         }
         synchronized(searchCursors) {
@@ -128,9 +207,10 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         val payload="""{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]}}""".toByteArray()
         val signed=signer.sign("https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/",VendorConstants.device,payload)
         val data=JSONObject(text(signed.url,signed))
-        if(data.optInt("Code",data.optInt("code",0))!=0) throw IOException("播放接口暂不可用")
+        val sourceCode=data.optInt("Code",data.optInt("code",0))
+        if(sourceCode!=0) throw ProviderPlaybackException(sourceCode)
         val map=data.optJSONObject("data") ?: throw IOException("播放信息为空")
-        val entry=map.optJSONObject(id) ?: map.keys().asSequence().mapNotNull { map.optJSONObject(it) }.firstOrNull() ?: throw IOException("播放信息为空")
+        val entry=map.optJSONObject(id) ?: throw IOException("片源未返回所选分集，请稍后重试")
         val model=entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
         val raw=model.opt("fallback_api")
         val fallback=when(raw) { is JSONObject -> raw.str("fallback_api"); is JSONArray -> raw.optString(0); else -> runCatching { JSONObject(raw.toString()).str("fallback_api") }.getOrDefault(raw.toString()) }

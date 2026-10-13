@@ -1,7 +1,63 @@
 package com.hongguotv.core
 
 fun main(args: Array<String>) {
-    val repository=ContentRepository()
+    val repository=if(args.contains("--browse") || args.contains("--playback")) ContentRepository(okhttp3.OkHttpClient.Builder().addInterceptor { chain ->
+        val response=chain.proceed(chain.request())
+        if(chain.request().url.host.contains("fqnovel")) {
+            val prefix=response.peekBody(16).bytes()
+            println("searchTransport status=${response.code}; mime=${response.header("Content-Type")}; encoding=${response.header("Content-Encoding")}; bytes=${response.body?.contentLength()}; startsJson=${prefix.firstOrNull()?.toInt()==123}; prefixHex=${prefix.take(4).joinToString("") { "%02x".format(it) }}")
+        }
+        if(!response.isSuccessful) println("catalogTransport status=${response.code}; path=${chain.request().url.encodedPath}; page=${chain.request().url.queryParameter("page")}")
+        if(chain.request().url.encodedPath.contains("multi_video_model")) {
+            val data=runCatching { org.json.JSONObject(response.peekBody(16384).string()) }.getOrNull()
+            println("playbackTransport status=${response.code}; code=${data?.opt("Code") ?: data?.opt("code")}; message=${data?.optString("Message",data.optString("message"))?.take(160)}")
+        }
+        response
+    }.connectTimeout(15,java.util.concurrent.TimeUnit.SECONDS).readTimeout(30,java.util.concurrent.TimeUnit.SECONDS).callTimeout(45,java.util.concurrent.TimeUnit.SECONDS).build()) else ContentRepository()
+    if(args.contains("--playback")) {
+        var playable=0
+        try {
+            for(type in ContentType.entries) for(series in repository.home(type=type).items.take(2)) {
+                var stage="detail"
+                try {
+                    val detail=repository.detail(series.id); stage="stream"
+                    val stream=repository.stream(detail.episodes.first(),720); stage="range/index"
+                    RemoteVideo(repository.http,stream).use { remote ->
+                        remote.prepare(); val bytes=remote.read(0,65536)
+                        println("playback type=${type.label}; title=${series.title}; quality=${stream.quality}; bytes=${bytes.size}; header=${String(bytes,4,4)}; total=${remote.total}")
+                        playable++
+                    }
+                } catch(e: Exception) { println("playback type=${type.label}; title=${series.title}; stage=$stage; error=${e.javaClass.simpleName}: ${e.message?.replace(Regex("https?://\\S+"),"[address]")}") }
+            }
+        } finally { repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown() }
+        check(playable>0) { "所有播放样本均失败，请检查上游接口" }
+        return
+    }
+    if(args.contains("--browse")) {
+        try {
+            for(type in ContentType.entries) {
+                val home=repository.discover(type)
+                check(home.items.isNotEmpty() && home.items.distinctBy { it.id }.size==home.items.size)
+                println("type=${type.label}; home=${home.items.size}; sourcePages=${home.loadedPages}; shelves=${DiscoveryShelves.from(home.items).map { it.title to it.items.size }}; notice=${home.notice}")
+                val keyword=if(type==ContentType.COMIC) "修仙" else "总裁"
+                val results=SearchCatalog({ keyword,page,kind -> repository.search(keyword,page,kind) })
+                val seen=mutableSetOf<String>()
+                for(page in 1..1000) {
+                    val result=results.page(keyword,page,type)
+                    check(result.items.none { it.id in seen })
+                    seen.addAll(result.items.map { it.id })
+                    println("query=$keyword; page=$page; visible=${result.items.size}; loaded=${result.foundCount}; hasMore=${result.hasMore}; notice=${result.notice}")
+                    if(!result.hasMore) break
+                }
+                val exact=home.items.first().title.take(80)
+                val matches=SearchCatalog({ keyword,page,kind -> repository.search(keyword,page,kind) }).page(exact,1,type)
+                println("exactQuery=$exact; found=${matches.foundCount}; first=${matches.items.firstOrNull()?.title}; exactFound=${matches.items.any { it.title==exact }}")
+            }
+        } finally {
+            repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
     if(args.contains("--ranking")) {
         try {
             val first=repository.comicRanking()

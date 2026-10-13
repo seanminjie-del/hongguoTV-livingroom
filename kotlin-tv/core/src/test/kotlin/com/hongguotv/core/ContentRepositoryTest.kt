@@ -12,6 +12,30 @@ import org.junit.Test
 import java.io.IOException
 
 class ContentRepositoryTest {
+    @Test fun upstreamPlaybackErrorKeepsItsCodeForRecoveryAndDiagnostics() {
+        val repo=repository { """{"Code":110001,"Message":"未知异常"}""" }
+        val error=assertThrows(IOException::class.java) { repo.stream("123") }
+        assertTrue(error.message.orEmpty().contains("110001"))
+    }
+    @Test fun playbackUsesIndependentVisitorIdentifiersPerRequest() {
+        val visitors=mutableListOf<Pair<String?,String?>>()
+        val repo=repository { request ->
+            visitors+=request.url.queryParameter("iid") to request.url.queryParameter("device_id")
+            """{"Code":110001}"""
+        }
+        repeat(2) { assertThrows(IOException::class.java) { repo.stream("123") } }
+        assertNotEquals(visitors[0],visitors[1])
+        assertTrue(visitors.all { (iid,device) -> iid?.matches(Regex("[0-9]{16}"))==true && device?.matches(Regex("[0-9]{16}"))==true && iid!=device })
+    }
+
+    @Test fun playbackNeverSubstitutesAnotherEpisodeFromTheResponse() {
+        val repo=repository { request ->
+            if(request.url.host=="example.com") """{"video_info":{"data":{"video_list":{"video_0":{"vheight":720,"main_url":"https://example.com/wrong-episode"}}}}}"""
+            else """{"data":{"999":{"video_model":{"fallback_api":"https://example.com/stream"}}}}"""
+        }
+        assertThrows(IOException::class.java) { repo.stream("123") }
+    }
+
     private fun streamRepository(vararg variants: Triple<Int,String,String>) = repository { request ->
         if(request.url.host=="example.com") {
             val rows=JSONObject()
@@ -243,5 +267,105 @@ class ContentRepositoryTest {
         }
         assertEquals("456",repo.search("短剧",1,ContentType.SHORT).items.single().id)
         assertEquals(2,paths.size)
+    }
+
+    @Test fun everyVideoInGroupedAndLynxResultsIsKeptWithItsOwnTitle() {
+        val second=JSONObject().put("series_id","222").put("title","修仙二").put("cover_url","https://example.com/2.jpg")
+        val tab=searchTab(19,"111")
+        val group=tab.getJSONArray("data").getJSONObject(0)
+        group.getJSONArray("video_data").put(second)
+        group.put("search_high_light",JSONObject().put("title",JSONObject().put("text","错误的分组名称")))
+        tab.getJSONArray("data").put(JSONObject().put("lynx_data",JSONObject().put("cell_data",JSONArray()
+            .put(JSONObject().put("video_data",JSONArray().put(second).put(JSONObject().put("series_id","333").put("series_name","修仙三"))))) .toString()))
+        val result=repository { JSONObject().put("code",0).put("search_tabs",JSONArray().put(tab)).toString() }.search("修仙",type=ContentType.COMIC)
+        assertEquals(listOf("111","222","333"),result.items.map { it.id })
+        assertEquals(listOf("测试剧集","修仙二","修仙三"),result.items.map { it.title })
+        assertEquals("https://example.com/2.jpg",result.items[1].cover)
+    }
+
+    @Test fun shortWebsiteFallbackStaysOnTheSameSourceOnPageTwo() {
+        val repo=repository { request ->
+            if(request.url.host.contains("fqnovel")) {
+                if(request.url.queryParameter("offset")=="0") throw IOException("app unavailable")
+                JSONObject().put("code",0).put("search_tabs",JSONArray().put(searchTab(11,"999"))).toString()
+            } else {
+                val id=if(request.url.queryParameter("page")=="1") "111" else "222"
+                """<script>_ROUTER_DATA={"loaderData":{"search_page":{"searchList":[{"series_id":"$id","series_name":"短剧"}],"pagination":{"totalPages":2}}}};</script>"""
+            }
+        }
+        assertEquals("111",repo.search("短剧",1,ContentType.SHORT).items.single().id)
+        val next=repo.search("短剧",2,ContentType.SHORT)
+        assertEquals("222",next.items.single().id)
+        assertFalse(next.hasMore)
+    }
+
+    @Test fun shortSearchAlsoRejectsAnExpiredCursor() {
+        var now=0L
+        val repo=repository(clock={ now }) { JSONObject().put("code",0).put("search_tabs",JSONArray().put(searchTab(11,"111"))).toString() }
+        repo.search("短剧",1,ContentType.SHORT); now=300001
+        assertThrows(SearchSessionExpiredException::class.java) { repo.search("短剧",2,ContentType.SHORT) }
+    }
+
+    @Test fun discoveryUsesThreeDifferentPagesAndPreservesTheNextPage() {
+        val repo=repository { request ->
+            val page=request.url.queryParameter("page")?.toInt() ?: 1
+            """<script>_ROUTER_DATA={"loaderData":{"category_$":{"recommendList":[{"series_id":"$page","series_name":"剧$page"}],"pagination":{"totalPages":5}}}};</script>"""
+        }
+        val result=repo.discover(ContentType.SHORT)
+        assertEquals(listOf("1","2","3"),result.items.map { it.id })
+        assertEquals(3,result.loadedPages); assertTrue(result.hasMore)
+    }
+
+    @Test fun discoveryKeepsTheFirstPageWhenALaterPageFails() {
+        val repo=repository { request ->
+            if(request.url.queryParameter("page")=="2") throw IOException("offline")
+            """<script>_ROUTER_DATA={"loaderData":{"category_$":{"recommendList":[{"series_id":"1","series_name":"剧"}],"pagination":{"totalPages":5}}}};</script>"""
+        }
+        val result=repo.discover(ContentType.SHORT)
+        assertEquals("1",result.items.single().id); assertEquals(1,result.loadedPages)
+        assertTrue(result.hasMore); assertTrue(result.notice.isNotBlank())
+    }
+
+    @Test fun emptyAppResponseFallsBackToTheCompleteTypeSpecificPublicCatalog() {
+        val repo=repository { request ->
+            if(request.url.host.contains("fqnovel")) "" else {
+                assertEquals("/category/comic-drama",request.url.encodedPath)
+                assertNull(request.url.queryParameter("sort_type"))
+                val page=request.url.queryParameter("page")?.toInt() ?: 1
+                val rows=JSONArray((1..24).map { JSONObject().put("series_id",((page-1)*24+it).toString()).put("series_name",if(page==2 && it==24) "修仙" else "修仙外传 $page-$it") })
+                "<script>_ROUTER_DATA="+JSONObject().put("loaderData",JSONObject().put("category_$",JSONObject().put("recommendList",rows).put("pagination",JSONObject().put("totalPages",2).put("pageNum",page))))+";</script>"
+            }
+        }
+        val first=repo.search("修仙",1,ContentType.COMIC)
+        assertEquals("48",first.items.first().id); assertEquals(24,first.items.size)
+        assertTrue(first.hasMore); assertTrue(first.notice.isNotBlank())
+        val second=repo.search("修仙",2,ContentType.COMIC)
+        assertEquals(24,second.items.size); assertFalse(second.hasMore)
+        assertTrue(first.items.map { it.id }.intersect(second.items.map { it.id }.toSet()).isEmpty())
+    }
+
+    @Test fun publicCatalogFailureDoesNotReturnAPartialSetAsComplete() {
+        val repo=repository { request ->
+            if(request.url.host.contains("fqnovel")) ""
+            else if(request.url.queryParameter("page")=="2") throw IOException("offline")
+            else """<script>_ROUTER_DATA={"loaderData":{"category_$":{"recommendList":[{"series_id":"1","series_name":"修仙"}],"pagination":{"totalPages":2,"pageNum":1}}}};</script>"""
+        }
+        assertThrows(IOException::class.java) { repo.search("修仙",1,ContentType.COMIC) }
+    }
+
+    @Test fun publicCatalogRetryResumesAfterTheLastSuccessfullyReadPage() {
+        var failed=true; var firstReads=0
+        val repo=repository { request ->
+            if(request.url.host.contains("fqnovel")) "" else {
+                val page=request.url.queryParameter("page")?.toInt() ?: 1
+                if(page==1) firstReads++
+                if(page==2 && failed) throw IOException("offline")
+                """<script>_ROUTER_DATA={"loaderData":{"category_$":{"recommendList":[{"series_id":"$page","series_name":"修仙$page"}],"pagination":{"totalPages":2,"pageNum":$page}}}};</script>"""
+            }
+        }
+        assertThrows(IOException::class.java) { repo.search("修仙",1,ContentType.COMIC) }
+        failed=false
+        assertEquals(2,repo.search("修仙",1,ContentType.COMIC).items.size)
+        assertEquals(1,firstReads)
     }
 }

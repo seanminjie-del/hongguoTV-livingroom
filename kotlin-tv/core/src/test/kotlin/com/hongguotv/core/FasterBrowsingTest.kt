@@ -30,12 +30,12 @@ class FasterBrowsingTest {
         val late=Resource(); assertFalse(slot.complete(second,"2",late)); assertTrue(late.closed)
     }
     @Test fun cacheIsBoundedAndRejectsCorruptionClockRollbackAndStaleData() {
-        val items=(1..40).map { Series(it.toString(),"剧 $it",description="介绍".repeat(1000)) }
-        val value=CatalogSnapshot.encode(items,true,1000)
+        val items=(1..120).map { Series(it.toString(),"剧 $it",description="介绍".repeat(1000)) }
+        val value=CatalogSnapshot.encode(items,true,1000,3)
         val page=CatalogSnapshot.decode(value,1100)!!
-        assertEquals(30,page.items.size); assertTrue(page.hasMore); assertEquals(1500,page.items.first().description.length)
+        assertEquals(90,page.items.size); assertEquals(3,page.loadedPages); assertTrue(page.hasMore); assertEquals(1500,page.items.first().description.length)
         assertNull(CatalogSnapshot.decode(value,999)); assertNull(CatalogSnapshot.decode(value,1000+8*24*60*60*1000L))
-        assertNull(CatalogSnapshot.decode("{bad",1100)); assertNull(CatalogSnapshot.decode("x".repeat(200001),1100))
+        assertNull(CatalogSnapshot.decode("{bad",1100)); assertNull(CatalogSnapshot.decode("x".repeat(400001),1100))
     }
     @Test fun oldBackupStillImportsAndNewQuickActionListsMergeWithinLimits() {
         val base=BackupData(listOf(Series("1","收藏")),emptyList(),emptySet(),emptyList(),BackupSettings())
