@@ -36,3 +36,11 @@ keystore.properties
 .externalNativeBuild/
 /ios/Pods/
 /ios/build/
+
+# Native iPhone build and local signed deliveries
+/ios-native/.build/
+/ios-native/.swiftpm/
+**/xcuserdata/
+*.xcresult
+*.ipa
+*.mobileprovision
