@@ -178,7 +178,7 @@ struct CollectionView:View {
             Text("我的收藏").font(.title2.bold())
             if store.favorites.isEmpty { Text("在剧集详情点收藏，把想看的故事留下来。").foregroundStyle(.secondary) }
             PosterGrid(items:store.favorites)
-            Text("红果剧场 iOS 1.0 · 原生播放器\n内容来自当前官网片库与最新播放接口。搜索范围随官网公开片库更新。").font(.caption).foregroundStyle(.secondary).padding(.top,20)
+            Text("红果剧场 iOS 1.1 · 全屏播放器\n内容来自当前官网片库与最新播放接口。搜索范围随官网公开片库更新。").font(.caption).foregroundStyle(.secondary).padding(.top,20)
         }.padding(20) }.background(Color.canvas).navigationTitle("我的")
     }
 }

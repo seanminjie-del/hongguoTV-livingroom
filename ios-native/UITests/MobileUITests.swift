@@ -15,9 +15,11 @@ final class MobileUITests:XCTestCase {
         expectation(for:playing,evaluatedWith:time)
         waitForExpectations(timeout:45)
         let player=XCTAttachment(screenshot:app.screenshot());player.name="02-player";player.lifetime = .keepAlways;add(player)
+        revealControls(app,button:"下一集")
         app.buttons["下一集"].tap()
         XCTAssertTrue(app.staticTexts["第 2 集"].waitForExistence(timeout:30))
         expectation(for:playing,evaluatedWith:time);waitForExpectations(timeout:45)
+        revealControls(app,button:"关闭播放")
         app.buttons["关闭播放"].tap()
         app.navigationBars.buttons.firstMatch.tap()
         app.tabBars.buttons["搜索"].tap()
@@ -44,10 +46,85 @@ final class MobileUITests:XCTestCase {
         let playing=NSPredicate(format:"label CONTAINS '已播放' AND NOT label CONTAINS '已播放 0 秒'")
         expectation(for:playing,evaluatedWith:time);waitForExpectations(timeout:45)
         let screenshot=XCTAttachment(screenshot:app.screenshot());screenshot.name="04-comic";screenshot.lifetime = .keepAlways;add(screenshot)
+        revealControls(app,button:"选集")
         app.buttons["选集"].tap()
         XCTAssertTrue(app.navigationBars.firstMatch.waitForExistence(timeout:10))
         XCTAssertTrue(app.buttons["完成"].exists)
         app.buttons["完成"].tap()
         app.buttons["关闭播放"].tap()
     }
+    @MainActor func testFullscreenRotationPreservesPlaybackAndRestoresPortrait() throws {
+        continueAfterFailure=false
+        XCUIDevice.shared.orientation = .portrait
+        let app=XCUIApplication();app.terminate();app.launch()
+        XCTAssertTrue(app.buttons["poster-first"].waitForExistence(timeout:45))
+        app.buttons["poster-first"].tap()
+        XCTAssertTrue(app.buttons["detail-episode-0"].waitForExistence(timeout:30))
+        app.buttons["detail-episode-0"].tap()
+        XCTAssertTrue(app.buttons["横屏"].waitForExistence(timeout:15))
+        let surface=app.descendants(matching:.any)["video-surface"]
+        XCTAssertTrue(surface.waitForExistence(timeout:10))
+        XCTAssertEqual(surface.frame.minX,app.frame.minX,accuracy:2)
+        XCTAssertEqual(surface.frame.minY,app.frame.minY,accuracy:2)
+        XCTAssertEqual(surface.frame.width,app.frame.width,accuracy:2)
+        XCTAssertEqual(surface.frame.height,app.frame.height,accuracy:2)
+        func elapsed() -> Int { let value=surface.value as? String ?? "";return Int(value.components(separatedBy:"已播放 ").last?.components(separatedBy:" 秒").first ?? "") ?? 0 }
+        let playing=NSPredicate { _,_ in elapsed()>0 }
+        expectation(for:playing,evaluatedWith:surface);waitForExpectations(timeout:45)
+        revealControls(app,button:"暂停")
+        app.buttons["暂停"].tap()
+        XCTAssertTrue(app.buttons["播放"].waitForExistence(timeout:10))
+        let rewindTarget=max(0,elapsed()-15)
+        app.buttons["后退15秒"].tap()
+        expectation(for:NSPredicate { _,_ in abs(elapsed()-rewindTarget)<=1 },evaluatedWith:surface);waitForExpectations(timeout:15)
+        let durationParts=app.staticTexts["playback-duration"].label.split(separator:":").compactMap { Int($0) }
+        XCTAssertEqual(durationParts.count,2)
+        let seekTarget=(durationParts[0]*60+durationParts[1])/2
+        app.sliders["播放进度"].adjust(toNormalizedSliderPosition:0.5)
+        // XCTest's normalized slider gesture is approximate; the button above checks exact seeking.
+        let gestureTolerance=max(2,(durationParts[0]*60+durationParts[1])/20)
+        expectation(for:NSPredicate { _,_ in abs(elapsed()-seekTarget)<=gestureTolerance },evaluatedWith:surface);waitForExpectations(timeout:15)
+        XCTAssertTrue(app.buttons["播放"].exists)
+        let before=elapsed()
+        revealControls(app,button:"横屏")
+        app.buttons["横屏"].tap()
+        expectation(for:NSPredicate { _,_ in app.frame.width>app.frame.height },evaluatedWith:app);waitForExpectations(timeout:15)
+        XCTAssertEqual(surface.frame.width,app.frame.width,accuracy:2)
+        XCTAssertEqual(surface.frame.height,app.frame.height,accuracy:2)
+        XCTAssertEqual(elapsed(),before,accuracy:1)
+        XCTAssertTrue(app.buttons["播放"].exists)
+        let landscape=XCTAttachment(screenshot:XCUIScreen.main.screenshot());landscape.name="05-fullscreen-landscape";landscape.lifetime = .keepAlways;add(landscape)
+        app.buttons["播放"].tap()
+        expectation(for:NSPredicate { _,_ in elapsed()>before },evaluatedWith:surface);waitForExpectations(timeout:15)
+        revealControls(app,button:"选集")
+        app.buttons["选集"].tap()
+        XCTAssertTrue(app.buttons["episode-option-1"].waitForExistence(timeout:10))
+        app.buttons["episode-option-1"].tap()
+        expectation(for:NSPredicate { _,_ in (surface.value as? String ?? "").contains("第 2 集") && elapsed()>0 },evaluatedWith:surface);waitForExpectations(timeout:45)
+        XCTAssertGreaterThan(app.frame.width,app.frame.height)
+        revealControls(app,button:"暂停")
+        app.buttons["暂停"].tap()
+        XCTAssertTrue(app.buttons["播放"].waitForExistence(timeout:10))
+        revealControls(app,button:"竖屏")
+        app.buttons["竖屏"].tap()
+        expectation(for:NSPredicate { _,_ in app.frame.height>app.frame.width },evaluatedWith:app);waitForExpectations(timeout:15)
+        let portrait=XCTAttachment(screenshot:XCUIScreen.main.screenshot());portrait.name="06-fullscreen-portrait";portrait.lifetime = .keepAlways;add(portrait)
+        revealControls(app,button:"横屏")
+        app.buttons["横屏"].tap()
+        expectation(for:NSPredicate { _,_ in app.frame.width>app.frame.height },evaluatedWith:app);waitForExpectations(timeout:15)
+        revealControls(app,button:"关闭播放")
+        app.buttons["关闭播放"].tap()
+        expectation(for:NSPredicate { _,_ in app.frame.height>app.frame.width },evaluatedWith:app);waitForExpectations(timeout:15)
+        XCTAssertTrue(app.staticTexts["detail-title"].waitForExistence(timeout:10))
+    }
+
+    @MainActor private func revealControls(_ app:XCUIApplication,button:String) {
+        let control=app.buttons[button]
+        let background=app.descendants(matching:.any)["video-surface"].coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.25))
+        // Start a fresh visibility interval before XCTest resolves and taps the control.
+        if control.exists { background.tap() }
+        background.tap()
+        XCTAssertTrue(control.exists || control.waitForExistence(timeout:5))
+    }
+
 }

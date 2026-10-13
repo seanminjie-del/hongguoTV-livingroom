@@ -1,0 +1,14 @@
+{
+  "originHash" : "4374c5e18bda66fca27abcace64ca75e7f180e919915c590851a63853d138624",
+  "pins" : [
+    {
+      "identity" : "player",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/piemonte/Player.git",
+      "state" : {
+        "revision" : "fb901038bbf9ea2f92a39541e90a2fd6eac1ed9b"
+      }
+    }
+  ],
+  "version" : 3
+}
