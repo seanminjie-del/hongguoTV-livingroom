@@ -12,8 +12,8 @@ android {
         minSdk = 26
         targetSdk = 36
         testInstrumentationRunner = "com.hongguotv.nativeapp.TvAcceptance"
-        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 10
-        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.10.0-local"
+        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 11
+        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.11.0-local"
     }
     buildFeatures { buildConfig = true }
     signingConfigs {

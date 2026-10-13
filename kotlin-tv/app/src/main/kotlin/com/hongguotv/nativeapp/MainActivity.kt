@@ -315,7 +315,7 @@ class MainActivity: Activity() {
         collectionReturn=CatalogState(page,catalog,hasMore,ranking,loadedPages,catalogNotice,foundCount); collectionFocus=catalogFocus
         collection=kind; page=1; catalogFocus=""; showCatalog()
     }
-    private fun inlineContentFilters()=tab<=1 && resources.configuration.fontScale<=1.2f && widthDp()>=900
+    private fun inlineContentFilters()=tab<=1 && resources.configuration.fontScale<=1.5f && widthDp()>=900
     private fun localCatalog()=tab==3 || tab==4 || collection!=null
     private fun localItems(): List<Series> = when(collection) {
         "hot" -> collectionReturn?.items.orEmpty().filterNot { it.id in library.hidden() }
@@ -480,8 +480,8 @@ class MainActivity: Activity() {
             typeButtons.values.forEach { it.nextFocusDownId=collectionBack!!.id }
         }
         catalogPageKey="$tab:${collection.orEmpty()}:$page:$query"
-        val preview=SeriesPreview(this,compact=tab==1); selectionPreview=preview; body.addView(preview)
-        if(tab==1 && query.isNotBlank()) body.addView(text("已载入 $foundCount 部${library.contentType.label} · ${if(hasMore) "还有结果可翻页" else "本次接口结果已展示"}"+(if(catalogNotice.isBlank()) "" else " · $catalogNotice"),12f,muted).apply { maxLines=2; setPadding(0,0,0,dp(6)) })
+        val preview=SeriesPreview(this,compact=tab==1,metadata=tab!=1 || resources.configuration.fontScale<=1.2f); selectionPreview=preview; body.addView(preview)
+        if(tab==1 && query.isNotBlank()) body.addView(text("找到 $foundCount 部${library.contentType.label} · ${if(hasMore) "可继续翻页" else "已全部展示"}"+(if(catalogNotice.isBlank()) "" else " · "+catalogNotice.replace(Regex("官网片库 · 已检索 \\d+ 部"),"搜索范围：官网公开片库")),12f,muted).apply { maxLines=2; setPadding(0,0,0,dp(6)) })
         val scroll=ScrollView(this).apply { isFillViewport=false; isVerticalScrollBarEnabled=false; clipToPadding=false }; catalogScroll=scroll
         val list=column(); scroll.addView(list); body.addView(scroll,lp(-1,0).apply { weight=1f })
         var restoringScroll=true
@@ -498,7 +498,7 @@ class MainActivity: Activity() {
             if(focusType) typeButtons[library.contentType]?.requestFocus() else if(collectionBack!=null && !focusNav) collectionBack?.requestFocus() else if(focusNav || resumeCards.isEmpty()) nav[tab].requestFocus() else resumeCards.first().requestFocus()
             return
         }
-        val cards=mutableListOf<View>(); val count=6; val gap=dp(14); val width=((resources.displayMetrics.widthPixels*.9f-gap*(count-1))/count).toInt()
+        val cards=mutableListOf<View>(); val count=if(resources.configuration.fontScale>1.2f) 5 else 6; val gap=dp(14); val width=((resources.displayMetrics.widthPixels*.9f-gap*(count-1))/count).toInt()
         displayed.chunked(count).forEach { items ->
             val line=row(); line.gravity=Gravity.TOP
             items.forEachIndexed { columnIndex,item ->
@@ -517,7 +517,13 @@ class MainActivity: Activity() {
                 card.addView(badge,lp(-1,-2)); if(tab==3) favoriteBadges[item.id]=badge
                 card.setOnClickListener { catalogFocus=item.id; openDetail(item,tab==4 || collection=="resume" || collection=="updates") }
                 card.setOnLongClickListener { catalogFocus=item.id; quickActions(item,card); true }
-                card.setOnKeyListener { _,key,event -> if(key==KeyEvent.KEYCODE_MENU) { if(event.action==KeyEvent.ACTION_UP) { catalogFocus=item.id; quickActions(item,card) }; true } else false }
+                card.setOnKeyListener { _,key,event ->
+                    if(key==KeyEvent.KEYCODE_MENU) { if(event.action==KeyEvent.ACTION_UP) { catalogFocus=item.id; quickActions(item,card) }; true }
+                    else if(key==KeyEvent.KEYCODE_DPAD_DOWN && cards.indexOf(card)/count==cards.lastIndex/count) {
+                        val target=card.rootView.findViewById<View>(card.nextFocusDownId)
+                        if(target!=null && target!==card && target.isFocusable) { if(event.action==KeyEvent.ACTION_DOWN) target.requestFocus(); true } else false
+                    } else false
+                }
                 card.setOnFocusChangeListener { _,focused -> card.background=TvStyle.card(this,focused); if(focused) { catalogFocus=item.id; loadCover(image,item.cover); preview.show(item,selectionStatus(item)); if(!restoringScroll) scroll.post { scroll.smoothScrollTo(0,when { line.top<scroll.scrollY -> line.top; line.bottom>scroll.scrollY+scroll.height -> (line.bottom-scroll.height).coerceAtLeast(0); else -> scroll.scrollY }) } } }
                 // The row measures its tallest card, then stretches siblings to keep badges aligned.
                 line.addView(card,lp(width,-1).apply { if(columnIndex<count-1) rightMargin=gap }); cards+=card
@@ -533,7 +539,8 @@ class MainActivity: Activity() {
             if(collection=="hot" && !hasMore && collectionReturn?.hasMore==true) {
                 next=addButton(paging,"下一批热门") { val nextPage=(collectionReturn?.loadedPages ?: 1)+1; collection=null; collectionReturn=null; page=nextPage; catalogFocus=""; showCatalog(true) }
             }
-            list.addView(paging,lp(-1,dp(50)))
+            body.addView(paging,lp(-1,dp(50)))
+            listOfNotNull(prev,next).forEach { it.nextFocusUpId=cards.last().id; it.nextFocusDownId=it.id }
         }
         cards.forEachIndexed { index,card ->
             card.nextFocusLeftId=if(index%count==0) card.id else cards[index-1].id
@@ -591,11 +598,15 @@ class MainActivity: Activity() {
             if(library.watched(series.id)) "整剧已看完" else progress?.let { "上次第 ${it.episodeIndex+1} 集 · ${formatTime(it.position)}" }.orEmpty()).filter { it.isNotBlank() }.joinToString(" · ")
     }
     private fun renderHome(body: LinearLayout,focusNav: Boolean,focusType: Boolean,loading: Boolean) {
+        homeScreen?.let { homePosition=it.capturePosition() }
         homeUpdateCount=library.updatedFavorites()
-        val preview=SeriesPreview(this); selectionPreview=preview; body.addView(preview)
+        val preview=SeriesPreview(this,compact=true,metadata=false); selectionPreview=preview
         val top=if(inlineContentFilters()) nav[0] else typeButtons.getValue(library.contentType)
-        val home=HomeScreen(this,top,::loadCover,{ item,label -> preview.show(item,if(label.startsWith("第 ")) selectionStatus(item) else listOf(label,selectionStatus(item)).filter { it.isNotBlank() }.joinToString(" · ")) },
-            { item,resume -> openDetail(item,resume) },::quickActions,{ catalogFocus=it })
+        val home=HomeScreen(this,top,preview,::loadCover,{ item,label -> preview.show(item,if(label.startsWith("第 ")) selectionStatus(item) else listOf(label,selectionStatus(item)).filter { it.isNotBlank() }.joinToString(" · ")) },
+            { item,resume -> openDetail(item,resume) },::quickActions,{ catalogFocus=it },{ id ->
+                typeButtons.values.forEach { it.nextFocusDownId=id }
+                if(inlineContentFilters()) nav.forEach { it.nextFocusDownId=id }
+            })
         homeScreen=home; body.addView(home,lp(-1,0).apply { weight=1f })
         val hot=catalog.filterNot { it.id in library.hidden() }
         home.render(homeShelves(),catalogFocus,!focusNav && !focusType,
@@ -619,18 +630,18 @@ class MainActivity: Activity() {
         val updates=library.favorites().filter { (library.favoriteUpdate(it.id)?.added ?: 0)>0 }
         val later=library.later(); val hidden=library.hidden(); val hot=catalog.filterNot { it.id in hidden }
         val personal=listOf(
-            HomeScreen.Shelf("resume","接着看",recent.take(8).map { p -> HomeScreen.Entry(p.series,
+            HomeScreen.Shelf("resume","接着看",recent.map { p -> HomeScreen.Entry(p.series,
                 "第 ${p.episodeIndex+1} 集 · ${if(p.completed) "接着看下一集" else formatTime(p.position)}",true,
                 if(p.duration>0) (p.position*100/p.duration).toInt().coerceIn(0,100) else null) },
-                if(recent.size>8) { { showCollection("resume") } } else null),
-            HomeScreen.Shelf("updates","收藏有更新",updates.take(8).map { HomeScreen.Entry(it,library.favoriteLabel(it.id),true) },
-                if(updates.size>8) { { showCollection("updates") } } else null),
-            HomeScreen.Shelf("later","稍后看",later.take(10).map { HomeScreen.Entry(it,"稍后看 · 长按管理") },
-                if(later.size>10) { { showCollection("later") } } else null))
-        return personal+DiscoveryShelves.from(hot).map { shelf ->
-            HomeScreen.Shelf(shelf.key,if(shelf.key=="hot") "热门发现 · ${library.contentType.label}" else shelf.title,
-                shelf.items.take(12).map { HomeScreen.Entry(it,it.badge.ifBlank { "查看剧集" }) },
-                if(shelf.key=="hot") { { showCollection("hot") } } else if(shelf.items.size>12) { { showCollection("topic:${shelf.key}") } } else null)
+                null),
+            HomeScreen.Shelf("updates","收藏有更新",updates.map { HomeScreen.Entry(it,library.favoriteLabel(it.id),true) },
+                null),
+            HomeScreen.Shelf("later","稍后看",later.map { HomeScreen.Entry(it,"稍后看 · 长按管理") },
+                null))
+        return listOf(HomeScreen.Shelf("hot","热门发现",hot.map { HomeScreen.Entry(it,it.badge.ifBlank { "查看剧集" }) }))+personal+DiscoveryShelves.channels(hot).filterNot { it.key=="hot" }.map { shelf ->
+            HomeScreen.Shelf(shelf.key,shelf.title,
+                shelf.items.map { HomeScreen.Entry(it,it.badge.ifBlank { "查看剧集" }) },
+                null)
         }
     }
     private fun refreshLibraryCards(changedId: String,removed: Boolean=false) {
