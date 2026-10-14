@@ -53,14 +53,42 @@ actor PlaybackAudio {
 }
 struct NativePlayer:UIViewRepresentable {
     let player:AVPlayer
-    func makeUIView(context:Context)->PlayerView {
-        let view=PlayerView(frame:.zero);view.player=player;view.playerFillMode = .resizeAspect;view.backgroundColor = .black;return view
+    var onReady:(Bool)->Void = { _ in }
+    final class Coordinator {
+        var observation:NSKeyValueObservation?
+        var onReady:(Bool)->Void = { _ in }
     }
-    func updateUIView(_ view:PlayerView,context:Context) { if view.player !== player { view.player=player } }
+    func makeCoordinator()->Coordinator { Coordinator() }
+    func makeUIView(context:Context)->PlayerView {
+        let view=PlayerView(frame:.zero);view.player=player;view.playerFillMode = .resizeAspect;view.backgroundColor = .black
+        context.coordinator.onReady=onReady
+        if let layer=view.layer as? AVPlayerLayer {
+            context.coordinator.observation=layer.observe(\.isReadyForDisplay,options:[.initial,.new]) { [weak coordinator=context.coordinator] layer,_ in
+                let ready=layer.isReadyForDisplay
+                Task { @MainActor in coordinator?.onReady(ready) }
+            }
+        }
+        return view
+    }
+    func updateUIView(_ view:PlayerView,context:Context) { context.coordinator.onReady=onReady;if view.player !== player { view.player=player } }
+    static func dismantleUIView(_ view:PlayerView,coordinator:Coordinator) { coordinator.observation=nil;view.player=nil }
+}
+@MainActor final class EpisodeBuffer {
+    let player=AVPlayer()
+    let loader:VideoLoader
+    let quality:String
+    let created=Date()
+    init(remote:RemoteStream,total:Int64,episode:String,quality:String) {
+        self.quality=quality;loader=VideoLoader(remote:remote,total:total)
+        let item=AVPlayerItem(asset:loader.asset(episode));item.preferredForwardBufferDuration=2
+        player.isMuted=true;player.automaticallyWaitsToMinimizeStalling=true;player.replaceCurrentItem(with:item)
+        player.seek(to:.zero,toleranceBefore:.zero,toleranceAfter:.zero)
+    }
 }
 @MainActor final class PlaybackSession:ObservableObject {
     let detail:Detail
-    let player=AVPlayer()
+    @Published private(set) var player=AVPlayer()
+    @Published private(set) var buffers:[Int:EpisodeBuffer]=[:]
     let store:LibraryStore
     @Published var index:Int
     @Published var loading=true
@@ -73,10 +101,9 @@ struct NativePlayer:UIViewRepresentable {
     @Published var speed:Float=1
     @Published var autoNext=true
     @Published private(set) var silentContinuation=false
-    private var loader:VideoLoader?
     private var loadTask:Task<Void,Never>?
     private var nextTask:Task<Void,Never>?
-    private var preload:(Int,StreamInfo,RemoteStream,Int64,Date)?
+    private var preparations:[Int:(UUID,Task<EpisodeBuffer,Error>)]=[:]
     private var observer:NSKeyValueObservation?
     private var playbackObserver:NSKeyValueObservation?
     private var clock:Any?
@@ -84,52 +111,82 @@ struct NativePlayer:UIViewRepresentable {
     private var generation=0
     init(detail:Detail,index:Int,store:LibraryStore) {
         self.detail=detail;self.index=index;self.store=store
-        player.automaticallyWaitsToMinimizeStalling=true
+        endToken=NotificationCenter.default.addObserver(forName:.AVPlayerItemDidPlayToEndTime,object:nil,queue:.main) { [weak self] note in
+            Task { @MainActor in guard let self,!self.loading,let item=note.object as? AVPlayerItem,item === self.player.currentItem else { return };self.store.save(self.detail.series,episode:self.index,seconds:0);if self.autoNext,self.index+1<self.detail.episodes.count { self.open(self.index+1,resume:false,silently:true) } }
+        }
+    }
+    private func stopObserving() {
+        if let clock { player.removeTimeObserver(clock);self.clock=nil };observer=nil;playbackObserver=nil
+    }
+    private func attach(_ buffer:EpisodeBuffer,token:Int) {
+        stopObserving();player=buffer.player;quality=buffer.quality
+        player.currentItem?.preferredForwardBufferDuration=8
         clock=player.addPeriodicTimeObserver(forInterval:CMTime(seconds:1,preferredTimescale:600),queue:.main) { [weak self] time in
-            Task { @MainActor in guard let self,time.seconds.isFinite else { return };self.position=max(0,time.seconds);self.seconds=Int(self.position);let duration=self.player.currentItem?.duration.seconds ?? 0;self.duration=duration.isFinite ? max(0,duration):0;if self.seconds>0,self.seconds%5==0 { self.persist() } }
+            Task { @MainActor in guard let self,self.generation==token,time.seconds.isFinite else { return };self.position=max(0,time.seconds);self.seconds=Int(self.position);let duration=self.player.currentItem?.duration.seconds ?? 0;self.duration=duration.isFinite ? max(0,duration):0;if self.seconds>0,self.seconds%5==0 { self.persist() } }
         }
         playbackObserver=player.observe(\.timeControlStatus,options:[.new,.initial]) { [weak self] player,_ in
-            Task { @MainActor in self?.playing=player.timeControlStatus == .playing }
+            Task { @MainActor in guard let self,self.generation==token else { return };self.playing=player.timeControlStatus == .playing }
         }
-        endToken=NotificationCenter.default.addObserver(forName:.AVPlayerItemDidPlayToEndTime,object:nil,queue:.main) { [weak self] note in
-            Task { @MainActor in guard let self,let item=note.object as? AVPlayerItem,item === self.player.currentItem else { return };self.store.save(self.detail.series,episode:self.index,seconds:0);if self.autoNext,self.index+1<self.detail.episodes.count { self.open(self.index+1,resume:false,silently:true) } }
+        observer=player.currentItem?.observe(\.status,options:[.new,.initial]) { [weak self] item,_ in
+            Task { @MainActor in guard let self,self.generation==token else { return };if item.status == .failed { self.loading=false;self.error=item.error?.localizedDescription ?? "视频暂不可播放" } }
         }
     }
     func open(_ index:Int,resume:Bool=true,silently:Bool=false) {
         guard detail.episodes.indices.contains(index) else { return }
-        silentContinuation=silently
-        persist();loadTask?.cancel();nextTask?.cancel();player.pause();player.replaceCurrentItem(with:nil);observer=nil;loader=nil
-        self.index=index;seconds=0;position=0;duration=0;loading=true;error=nil;generation+=1;let token=generation
+        persist();generation+=1;let token=generation
+        loadTask?.cancel();nextTask?.cancel();stopObserving();player.pause();player.isMuted=true
+        if error != nil { buffers.removeValue(forKey:index) }
+        silentContinuation=silently;self.index=index;seconds=0;position=0;duration=0;playing=false;loading=true;error=nil
+        trimBuffers()
         loadTask=Task { [weak self] in
             guard let self else { return }
             do {
-                let info:StreamInfo,remote:RemoteStream,total:Int64
-                if let cached=preload,cached.0 == index,Date().timeIntervalSince(cached.4)<120 { (info,remote,total)=(cached.1,cached.2,cached.3) }
-                else { info=try await store.repository.stream(id:self.detail.episodes[index]);remote=RemoteStream(info:info);total=try await remote.prepare() }
-                try Task.checkCancellation();guard self.generation==token else { return };preload=nil
+                let buffer=try await prepare(index)
+                try Task.checkCancellation();guard self.generation==token else { return }
+                buffers[index]=buffer
                 try await PlaybackAudio.shared.activate();try Task.checkCancellation();guard self.generation==token else { return }
-                let loader=VideoLoader(remote:remote,total:total);self.loader=loader;quality=info.quality
-                let item=AVPlayerItem(asset:loader.asset(self.detail.episodes[index]));item.preferredForwardBufferDuration=8
-                observer=item.observe(\.status,options:[.new,.initial]) { [weak self] item,_ in
-                    Task { @MainActor in guard let self,self.generation==token else { return };if item.status == .readyToPlay { self.loading=false };if item.status == .failed { self.loading=false;self.error=item.error?.localizedDescription ?? "视频暂不可播放" } }
-                }
-                player.replaceCurrentItem(with:item)
-                if resume,let record=store.history.first(where:{$0.id==self.detail.series.id}),record.episode==index,record.seconds>1 {
-                    await player.seek(to:CMTime(seconds:record.seconds,preferredTimescale:600),toleranceBefore:.zero,toleranceAfter:.zero)
-                    try Task.checkCancellation();guard self.generation==token else { return }
-                }
-                player.playImmediately(atRate:speed)
-                prepareNext(index+1)
+                attach(buffer,token:token)
+                let record=resume ? store.history.first(where:{$0.id==self.detail.series.id && $0.episode==index}):nil
+                let start=record?.seconds ?? 0
+                await player.seek(to:CMTime(seconds:start,preferredTimescale:600),toleranceBefore:.zero,toleranceAfter:.zero)
+                try Task.checkCancellation();guard self.generation==token else { return }
+                if let item=player.currentItem,item.status == .failed { throw item.error ?? HongguoError.message("视频暂不可播放") }
+                loading=false;player.isMuted=false;player.playImmediately(atRate:speed)
+                prepareNeighbors()
             } catch is CancellationError { } catch { guard self.generation==token else { return };loading=false;self.error=Network.errorText(error) }
         }
     }
-    private func prepareNext(_ index:Int) {
-        guard detail.episodes.indices.contains(index) else { return }
+    private func prepare(_ index:Int) async throws -> EpisodeBuffer {
+        if let buffer=buffers[index],Date().timeIntervalSince(buffer.created)<120,buffer.player.currentItem?.status != .failed { return buffer }
+        if let pending=preparations[index] { return try await pending.1.value }
+        let id=UUID(),repository=store.repository,episode=detail.episodes[index]
+        let task=Task { @MainActor in
+            let info=try await repository.stream(id:episode),remote=RemoteStream(info:info),total=try await remote.prepare()
+            try Task.checkCancellation()
+            return EpisodeBuffer(remote:remote,total:total,episode:episode,quality:info.quality)
+        }
+        preparations[index]=(id,task)
+        defer { if preparations[index]?.0==id { preparations.removeValue(forKey:index) } }
+        let buffer=try await task.value
+        try Task.checkCancellation()
+        if abs(index-self.index)<=1 { buffers[index]=buffer }
+        return buffer
+    }
+    private func trimBuffers() {
+        for index in Array(buffers.keys) where abs(index-self.index)>1 {
+            let buffer=buffers.removeValue(forKey:index);buffer?.player.pause();buffer?.player.replaceCurrentItem(with:nil)
+        }
+        for index in Array(preparations.keys) where abs(index-self.index)>1 { preparations.removeValue(forKey:index)?.1.cancel() }
+    }
+    private func prepareNeighbors() {
         nextTask=Task { [weak self] in
             guard let self else { return }
             do {
-                try await Task.sleep(for:.seconds(3));let info=try await store.repository.stream(id:detail.episodes[index]);let remote=RemoteStream(info:info),total=try await remote.prepare()
-                try Task.checkCancellation();preload=(index,info,remote,total,Date())
+                try await Task.sleep(for:.milliseconds(500))
+                for neighbor in [index+1,index-1] where detail.episodes.indices.contains(neighbor) {
+                    try Task.checkCancellation()
+                    _ = try? await prepare(neighbor)
+                }
             } catch { /* Optional preloading never interrupts the current episode. */ }
         }
     }
@@ -145,14 +202,20 @@ struct NativePlayer:UIViewRepresentable {
         }
     }
     func persist() { if seconds>0 { store.save(detail.series,episode:index,seconds:Double(seconds)) } }
-    func suspend() { persist();player.pause();nextTask?.cancel();preload=nil }
-    func close() { persist();loadTask?.cancel();nextTask?.cancel();player.pause();player.replaceCurrentItem(with:nil);observer=nil;playbackObserver=nil;loader=nil;preload=nil;if let clock { player.removeTimeObserver(clock);self.clock=nil };if let endToken { NotificationCenter.default.removeObserver(endToken);self.endToken=nil };Task { try? await PlaybackAudio.shared.deactivate() } }
+    func suspend() { persist();player.pause();nextTask?.cancel();preparations.values.forEach { $0.1.cancel() };preparations.removeAll() }
+    func close() { persist();generation+=1;loadTask?.cancel();nextTask?.cancel();preparations.values.forEach { $0.1.cancel() };preparations.removeAll();stopObserving();player.pause();player.replaceCurrentItem(with:nil);buffers.values.forEach { $0.player.pause();$0.player.replaceCurrentItem(with:nil) };buffers.removeAll();if let endToken { NotificationCenter.default.removeObserver(endToken);self.endToken=nil };Task { try? await PlaybackAudio.shared.deactivate() } }
+}
+private struct BufferedVideo:View {
+    let buffer:EpisodeBuffer
+    @State private var frameReady=false
+    var body:some View { NativePlayer(player:buffer.player,onReady:{ frameReady=$0 }).opacity(frameReady ? 1:0) }
 }
 struct PlayerScreen:View {
     @StateObject var session:PlaybackSession
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var phase
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showEpisodes=false
     @State private var showOptions=false
     @State private var controlsVisible=true
@@ -161,16 +224,32 @@ struct PlayerScreen:View {
     @State private var scrubPosition:Double=0
     @State private var orientationError:String?
     @State private var previousIdleTimer=false
+    @State private var progressFrame=CGRect.zero
+    @State private var dragOffset:CGFloat=0
+    @State private var dragOrigin:Int?
     var body:some View {
         GeometryReader { geometry in
             let landscape=geometry.size.width>geometry.size.height
             let insets=ScreenOrientation.windowScene?.keyWindow?.safeAreaInsets ?? .zero
             ZStack {
                 Color.black.ignoresSafeArea()
-                NativePlayer(player:session.player).ignoresSafeArea()
+                ZStack {
+                    ForEach(max(0,session.index-1)...min(session.detail.episodes.count-1,session.index+1),id:\.self) { index in
+                        ZStack {
+                            AsyncImage(url:URL(string:session.detail.series.cover)) { image in
+                                image.resizable().scaledToFit()
+                            } placeholder:{ Color.surface }
+                            if let buffer=session.buffers[index] { BufferedVideo(buffer:buffer).id(ObjectIdentifier(buffer)) }
+                        }.frame(width:geometry.size.width,height:geometry.size.height).clipped()
+                            .offset(y:CGFloat(index-session.index)*geometry.size.height+dragOffset)
+                    }
+                }.frame(width:geometry.size.width,height:geometry.size.height).clipped()
                     .contentShape(Rectangle())
                     .onTapGesture { withAnimation(.easeOut(duration:0.2)) { controlsVisible.toggle() } }
                     .accessibilityElement(children:.ignore).accessibilityLabel("全屏播放器，轻点显示或隐藏控制")
+                    .accessibilityHint("上滑下一集，下滑上一集")
+                    .accessibilityAction(named:Text("下一集")) { changeEpisode(1) }
+                    .accessibilityAction(named:Text("上一集")) { changeEpisode(-1) }
                     .accessibilityValue("\(landscape ? "横屏":"竖屏") · 第 \(session.index+1) 集 · 已播放 \(session.seconds) 秒")
                     .accessibilityAddTraits(.isButton).accessibilityIdentifier("video-surface")
                 if controlsVisible {
@@ -190,8 +269,24 @@ struct PlayerScreen:View {
                 }
                 if session.loading,!session.silentContinuation { ProgressView("正在准备 \(session.quality)").padding(20).background(.ultraThinMaterial,in:RoundedRectangle(cornerRadius:16)) }
                 if let error=session.error,!session.silentContinuation { VStack(spacing:16) { Image(systemName:"exclamationmark.triangle").font(.largeTitle);Text(error).multilineTextAlignment(.center);Button("重新加载") { session.open(session.index) }.buttonStyle(.borderedProminent) }.padding(24).background(Color.surface,in:RoundedRectangle(cornerRadius:20)) }
-            }.frame(maxWidth:.infinity,maxHeight:.infinity)
-                .onChange(of:geometry.size) { _,_ in controlsVisible=true;interaction+=1 }
+            }.frame(maxWidth:.infinity,maxHeight:.infinity).coordinateSpace(name:"player")
+                .simultaneousGesture(DragGesture(minimumDistance:30,coordinateSpace:.named("player")).onChanged { value in
+                    let vertical=value.translation.height,horizontal=value.translation.width
+                    guard acceptsSwipe(from:value.startLocation),abs(vertical)>abs(horizontal)*1.5 else { return }
+                    if dragOrigin==nil { dragOrigin=session.index }
+                    controlsVisible=false
+                    let target=session.index+(vertical<0 ? 1:-1)
+                    dragOffset=session.detail.episodes.indices.contains(target) ? max(-geometry.size.height,min(geometry.size.height,vertical)):vertical*0.18
+                }.onEnded { value in
+                    let vertical=value.translation.height,horizontal=value.translation.width
+                    let commit=dragOrigin==session.index && abs(vertical)>=80 && abs(vertical)>abs(horizontal)*1.5
+                    dragOrigin=nil
+                    withAnimation(reduceMotion ? nil:.spring(response:0.32,dampingFraction:0.9)) {
+                        dragOffset=0
+                        if commit { changeEpisode(vertical<0 ? 1:-1) }
+                    }
+                })
+                .onChange(of:geometry.size) { _,_ in dragOffset=0;dragOrigin=nil;controlsVisible=true;interaction+=1 }
         }.ignoresSafeArea().background(.black).preferredColorScheme(.dark).tint(.coral)
         .statusBarHidden(true).persistentSystemOverlays(.hidden)
         .onAppear { previousIdleTimer=UIApplication.shared.isIdleTimerDisabled;UIApplication.shared.isIdleTimerDisabled=true;ScreenOrientation.select(.portrait) { orientationError=$0 } }
@@ -210,6 +305,13 @@ struct PlayerScreen:View {
         }
         .alert("无法切换屏幕方向",isPresented:Binding(get:{ orientationError != nil },set:{ if !$0 { orientationError=nil } })) { Button("确定") { orientationError=nil } } message:{ Text(orientationError ?? "") }
     }
+    private func changeEpisode(_ offset:Int) {
+        guard !scrubbing,!showEpisodes,!showOptions else { return }
+        session.open(session.index+offset,resume:false,silently:true)
+    }
+    private func acceptsSwipe(from point:CGPoint)->Bool {
+        !scrubbing && !showEpisodes && !showOptions && !(controlsVisible && progressFrame.insetBy(dx:-12,dy:-12).contains(point))
+    }
     private func topControls(landscape:Bool)->some View {
         HStack(spacing:12) {
             Button { ScreenOrientation.select(.portrait) { _ in };session.close();dismiss() } label:{ Image(systemName:"chevron.down").font(.title3).frame(width:44,height:44) }.accessibilityLabel("关闭播放")
@@ -222,7 +324,7 @@ struct PlayerScreen:View {
         VStack(spacing:10) {
             if session.silentContinuation,session.loading || session.error != nil {
                 HStack {
-                    Text(session.loading ? "正在加载下一集":session.error ?? "").lineLimit(2)
+                    Text(session.loading ? "正在加载剧集":session.error ?? "").lineLimit(2)
                     if session.error != nil { Button("重试") { session.open(session.index,resume:false,silently:true) } }
                 }.font(.caption).foregroundStyle(.white.opacity(0.8))
             }
@@ -232,6 +334,7 @@ struct PlayerScreen:View {
                 Slider(value:Binding(get:{ scrubbing ? scrubPosition:session.position },set:{ scrubPosition=$0;if !scrubbing { session.seek(to:$0) } }),in:0...max(session.duration,1)) { editing in
                     scrubbing=editing;if !editing { session.seek(to:scrubPosition) }
                 }.disabled(session.duration<=0 || session.loading).accessibilityLabel("播放进度")
+                    .onGeometryChange(for:CGRect.self) { $0.frame(in:.named("player")) } action:{ progressFrame=$0 }
                 Text(time(session.duration)).accessibilityIdentifier("playback-duration")
             }.font(.caption.monospacedDigit()).foregroundStyle(.white)
             HStack(spacing:14) {
