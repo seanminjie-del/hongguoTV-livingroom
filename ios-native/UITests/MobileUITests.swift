@@ -124,22 +124,22 @@ final class MobileUITests:XCTestCase {
         let app=XCUIApplication();app.terminate();app.launch()
         XCTAssertTrue(app.buttons["poster-first"].waitForExistence(timeout:45))
         app.buttons["poster-first"].tap()
+        if !app.staticTexts["detail-title"].waitForExistence(timeout:5),app.buttons["poster-first"].exists { app.buttons["poster-first"].tap() }
         XCTAssertTrue(app.buttons["detail-episode-0"].waitForExistence(timeout:30))
         app.buttons["detail-episode-0"].tap()
         let surface=app.descendants(matching:.any)["video-surface"]
         XCTAssertTrue(surface.waitForExistence(timeout:15))
         func elapsed() -> Int { Int((surface.value as? String ?? "").components(separatedBy:"已播放 ").last?.components(separatedBy:" 秒").first ?? "") ?? 0 }
         expectation(for:NSPredicate { _,_ in elapsed()>0 },evaluatedWith:surface);waitForExpectations(timeout:45)
+        revealControls(app,button:"选集")
+        app.buttons["选集"].tap()
+        XCTAssertTrue(app.buttons["episode-option-0"].waitForExistence(timeout:10))
+        app.buttons["episode-option-0"].tap()
+        expectation(for:NSPredicate { _,_ in (surface.value as? String ?? "").contains("第 1 集") && elapsed()>0 },evaluatedWith:surface);waitForExpectations(timeout:45)
         for episode in 2...3 {
-            revealControls(app,button:"暂停")
-            app.buttons["暂停"].tap()
-            XCTAssertTrue(app.buttons["播放"].waitForExistence(timeout:10))
-            app.sliders["播放进度"].adjust(toNormalizedSliderPosition:0.95)
-            app.buttons["播放"].tap()
-            let background=surface.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.25))
-            if app.buttons["横屏"].exists { background.tap() }
-            expectation(for:NSPredicate { _,_ in (surface.value as? String ?? "").contains("第 \(episode) 集") },evaluatedWith:surface);waitForExpectations(timeout:60)
-            XCTAssertFalse(app.buttons["横屏"].exists,"自动连播不能重新弹出控制栏")
+            // Let real playback finish without tapping, seeking, or altering playback speed.
+            expectation(for:NSPredicate { _,_ in (surface.value as? String ?? "").contains("第 \(episode) 集") },evaluatedWith:surface);waitForExpectations(timeout:300)
+            XCTAssertFalse(app.buttons["横屏"].exists,"自动连播不能重新弹出控制栏：\(surface.value as? String ?? "")")
             XCTAssertFalse(app.staticTexts.matching(NSPredicate(format:"label BEGINSWITH %@","正在准备")).firstMatch.exists,"自动连播不能弹出加载窗口")
             XCTAssertEqual(app.alerts.count,0)
             XCTAssertEqual(app.sheets.count,0)
@@ -158,10 +158,11 @@ final class MobileUITests:XCTestCase {
     @MainActor private func revealControls(_ app:XCUIApplication,button:String) {
         let control=app.buttons[button]
         let background=app.descendants(matching:.any)["video-surface"].coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.25))
-        // Start a fresh visibility interval before XCTest resolves and taps the control.
-        if control.exists { background.tap() }
-        background.tap()
-        XCTAssertTrue(control.exists || control.waitForExistence(timeout:5))
+        for _ in 0..<2 {
+            if control.exists && control.isHittable { return }
+            background.tap()
+        }
+        XCTAssertTrue(control.exists && control.isHittable)
     }
 
 }
