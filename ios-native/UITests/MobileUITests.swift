@@ -118,6 +118,43 @@ final class MobileUITests:XCTestCase {
         XCTAssertTrue(app.staticTexts["detail-title"].waitForExistence(timeout:10))
     }
 
+    @MainActor func testAutomaticContinuationDoesNotPresentOverlays() throws {
+        continueAfterFailure=false
+        XCUIDevice.shared.orientation = .portrait
+        let app=XCUIApplication();app.terminate();app.launch()
+        XCTAssertTrue(app.buttons["poster-first"].waitForExistence(timeout:45))
+        app.buttons["poster-first"].tap()
+        XCTAssertTrue(app.buttons["detail-episode-0"].waitForExistence(timeout:30))
+        app.buttons["detail-episode-0"].tap()
+        let surface=app.descendants(matching:.any)["video-surface"]
+        XCTAssertTrue(surface.waitForExistence(timeout:15))
+        func elapsed() -> Int { Int((surface.value as? String ?? "").components(separatedBy:"已播放 ").last?.components(separatedBy:" 秒").first ?? "") ?? 0 }
+        expectation(for:NSPredicate { _,_ in elapsed()>0 },evaluatedWith:surface);waitForExpectations(timeout:45)
+        for episode in 2...3 {
+            revealControls(app,button:"暂停")
+            app.buttons["暂停"].tap()
+            XCTAssertTrue(app.buttons["播放"].waitForExistence(timeout:10))
+            app.sliders["播放进度"].adjust(toNormalizedSliderPosition:0.95)
+            app.buttons["播放"].tap()
+            let background=surface.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.25))
+            if app.buttons["横屏"].exists { background.tap() }
+            expectation(for:NSPredicate { _,_ in (surface.value as? String ?? "").contains("第 \(episode) 集") },evaluatedWith:surface);waitForExpectations(timeout:60)
+            XCTAssertFalse(app.buttons["横屏"].exists,"自动连播不能重新弹出控制栏")
+            XCTAssertFalse(app.staticTexts.matching(NSPredicate(format:"label BEGINSWITH %@","正在准备")).firstMatch.exists,"自动连播不能弹出加载窗口")
+            XCTAssertEqual(app.alerts.count,0)
+            XCTAssertEqual(app.sheets.count,0)
+            expectation(for:NSPredicate { _,_ in elapsed()>0 },evaluatedWith:surface);waitForExpectations(timeout:45)
+            XCTAssertFalse(app.buttons["横屏"].exists)
+        }
+        let screenshot=XCTAttachment(screenshot:XCUIScreen.main.screenshot());screenshot.name="07-silent-continuation";screenshot.lifetime = .keepAlways;add(screenshot)
+        revealControls(app,button:"下一集")
+        app.buttons["下一集"].tap()
+        XCTAssertTrue(app.buttons["横屏"].waitForExistence(timeout:10),"手动操作应仍然显示控制栏")
+        expectation(for:NSPredicate { _,_ in (surface.value as? String ?? "").contains("第 4 集") && elapsed()>0 },evaluatedWith:surface);waitForExpectations(timeout:45)
+        revealControls(app,button:"关闭播放")
+        app.buttons["关闭播放"].tap()
+    }
+
     @MainActor private func revealControls(_ app:XCUIApplication,button:String) {
         let control=app.buttons[button]
         let background=app.descendants(matching:.any)["video-surface"].coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.25))

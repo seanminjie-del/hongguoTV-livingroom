@@ -72,6 +72,7 @@ struct NativePlayer:UIViewRepresentable {
     @Published var playing=false
     @Published var speed:Float=1
     @Published var autoNext=true
+    @Published private(set) var silentContinuation=false
     private var loader:VideoLoader?
     private var loadTask:Task<Void,Never>?
     private var nextTask:Task<Void,Never>?
@@ -91,11 +92,12 @@ struct NativePlayer:UIViewRepresentable {
             Task { @MainActor in self?.playing=player.timeControlStatus == .playing }
         }
         endToken=NotificationCenter.default.addObserver(forName:.AVPlayerItemDidPlayToEndTime,object:nil,queue:.main) { [weak self] note in
-            Task { @MainActor in guard let self,let item=note.object as? AVPlayerItem,item === self.player.currentItem else { return };self.store.save(self.detail.series,episode:self.index,seconds:0);if self.autoNext,self.index+1<self.detail.episodes.count { self.open(self.index+1,resume:false) } }
+            Task { @MainActor in guard let self,let item=note.object as? AVPlayerItem,item === self.player.currentItem else { return };self.store.save(self.detail.series,episode:self.index,seconds:0);if self.autoNext,self.index+1<self.detail.episodes.count { self.open(self.index+1,resume:false,silently:true) } }
         }
     }
-    func open(_ index:Int,resume:Bool=true) {
+    func open(_ index:Int,resume:Bool=true,silently:Bool=false) {
         guard detail.episodes.indices.contains(index) else { return }
+        silentContinuation=silently
         persist();loadTask?.cancel();nextTask?.cancel();player.pause();player.replaceCurrentItem(with:nil);observer=nil;loader=nil
         self.index=index;seconds=0;position=0;duration=0;loading=true;error=nil;generation+=1;let token=generation
         loadTask=Task { [weak self] in
@@ -186,8 +188,8 @@ struct PlayerScreen:View {
                         .background(LinearGradient(colors:[.black.opacity(0.7),.clear,.black.opacity(0.8)],startPoint:.top,endPoint:.bottom))
                         .transition(.opacity)
                 }
-                if session.loading { ProgressView("正在准备 \(session.quality)").padding(20).background(.ultraThinMaterial,in:RoundedRectangle(cornerRadius:16)) }
-                if let error=session.error { VStack(spacing:16) { Image(systemName:"exclamationmark.triangle").font(.largeTitle);Text(error).multilineTextAlignment(.center);Button("重新加载") { session.open(session.index) }.buttonStyle(.borderedProminent) }.padding(24).background(Color.surface,in:RoundedRectangle(cornerRadius:20)) }
+                if session.loading,!session.silentContinuation { ProgressView("正在准备 \(session.quality)").padding(20).background(.ultraThinMaterial,in:RoundedRectangle(cornerRadius:16)) }
+                if let error=session.error,!session.silentContinuation { VStack(spacing:16) { Image(systemName:"exclamationmark.triangle").font(.largeTitle);Text(error).multilineTextAlignment(.center);Button("重新加载") { session.open(session.index) }.buttonStyle(.borderedProminent) }.padding(24).background(Color.surface,in:RoundedRectangle(cornerRadius:20)) }
             }.frame(maxWidth:.infinity,maxHeight:.infinity)
                 .onChange(of:geometry.size) { _,_ in controlsVisible=true;interaction+=1 }
         }.ignoresSafeArea().background(.black).preferredColorScheme(.dark).tint(.coral)
@@ -198,7 +200,7 @@ struct PlayerScreen:View {
             guard controlsVisible,session.playing,!session.loading,session.error==nil,!scrubbing,!showEpisodes,!showOptions,!voiceOver else { return }
             do { try await Task.sleep(for:.seconds(4));try Task.checkCancellation();withAnimation(.easeOut(duration:0.2)) { controlsVisible=false } } catch { }
         }
-        .onChange(of:session.index) { _,_ in controlsVisible=true;scrubbing=false }
+        .onChange(of:session.index) { _,_ in controlsVisible = !session.silentContinuation;scrubbing=false }
         .onDisappear { session.close();UIApplication.shared.isIdleTimerDisabled=previousIdleTimer;ScreenOrientation.select(.portrait) { _ in } }
         .onChange(of:phase) { _,value in if value != .active { session.suspend();controlsVisible=true } }
         .sheet(isPresented:$showEpisodes) { EpisodeSheet(detail:session.detail,current:session.index) { session.open($0,resume:false);showEpisodes=false } }
@@ -218,6 +220,12 @@ struct PlayerScreen:View {
     }
     private func bottomControls(landscape:Bool)->some View {
         VStack(spacing:10) {
+            if session.silentContinuation,session.loading || session.error != nil {
+                HStack {
+                    Text(session.loading ? "正在加载下一集":session.error ?? "").lineLimit(2)
+                    if session.error != nil { Button("重试") { session.open(session.index,resume:false,silently:true) } }
+                }.font(.caption).foregroundStyle(.white.opacity(0.8))
+            }
             HStack { Text(session.quality);Spacer();Text("已播放 \(session.seconds) 秒").accessibilityIdentifier("playback-clock") }.font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.8))
             HStack(spacing:10) {
                 Text(time(scrubbing ? scrubPosition:session.position))

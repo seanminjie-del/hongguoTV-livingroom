@@ -16,6 +16,7 @@
 
 播放器方案与第三方来源见 [选择记录](PLAYER_SELECTION.md)。
 1.1.0 全屏与横竖屏的实际验证及安装记录见 [升级记录](RELEASE_1.1.0.md)。
+1.1.1 自动连播采用静默切集：不主动显示控制栏、加载窗口或错误弹层；需要查看加载状态或重试时，轻点画面打开控制栏。构建与尚待完成的真机回归见 [静默连播记录](RELEASE_1.1.1.md)。
 
 `Sources/HongguoCore` 是本地 Swift Package，可在 macOS 跑测试。仅使用系统 Foundation、CommonCrypto、JavaScriptCore；签名 JavaScript 是本地打包的固定代码，不下载或执行远端代码。视频分段读取有响应大小、Content-Range 与索引边界校验，并按 MP4 样本 / 子样本进行 AES-CTR 解密，保留 AVC / HEVC 原始编码。
 
