@@ -17,6 +17,8 @@
 - 本版移植：每次请求生成本地临时访客编号，在 URL 和签名中使用相同编号；会话 nonce 与启动时间不再固定；响应必须包含所选分集，不能替换成其他集。保留已验证的 hash branch 0。
 - `tools/visitor-signing-oracle.cjs` 可用上述固定版本源码生成独立对照数据；仅开发期使用，APK 无 Node 依赖。
 
+2026-10-17 对照 jackotom/hongguo-drama `v1.73` / [`84b6e88e65374942c123a53c7d6ad9e78bcd101b`](https://github.com/jackotom/hongguo-drama/tree/84b6e88e65374942c123a53c7d6ad9e78bcd101b)，播放接口实现相对上述版本未变化。参考其有限重试、取消与完整响应保护思路，为本客户端的内容及分段 GET 请求增加短退避；未引入桌面端运行时依赖。具体差异见 [核对记录](../docs/research/2026-10-17-upstream-iteration.md)。
+
 其他依赖：
 
 - ZXing core（本机生成手机输入与更新二维码）：https://github.com/zxing/zxing — Apache-2.0

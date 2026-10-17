@@ -39,6 +39,7 @@ final class MobileUITests:XCTestCase {
         app.segmentedControls["kind-picker"].buttons["漫剧"].tap()
         XCTAssertTrue(app.buttons["poster-first"].waitForExistence(timeout:45))
         app.buttons["poster-first"].tap()
+        if !app.staticTexts["detail-title"].waitForExistence(timeout:5),app.buttons["poster-first"].exists { app.buttons["poster-first"].tap() }
         XCTAssertTrue(app.buttons["detail-episode-0"].waitForExistence(timeout:30))
         app.buttons["detail-episode-0"].tap()
         let time=app.staticTexts["playback-clock"]
@@ -164,9 +165,10 @@ final class MobileUITests:XCTestCase {
         XCTAssertTrue(progress.isEnabled)
         progress.coordinate(withNormalizedOffset:CGVector(dx:0.15,dy:0.5)).press(forDuration:0.1,thenDragTo:progress.coordinate(withNormalizedOffset:CGVector(dx:0.15,dy:-3)))
         XCTAssertTrue(waitEpisode(2),"进度条区域的上下拖动不能切集")
+        revealControls(app,button:"选集")
         drag(0.8,0.3,0.8,0.7)
         assertVisibleVideo("下滑切集时不能黑屏")
-        XCTAssertTrue(waitEpisode(1),"下滑应回到第一集")
+        XCTAssertTrue(waitEpisode(1),"控制栏可见时下滑应回到第一集：\(surface.value as? String ?? "")")
         revealControls(app,button:"横屏");app.buttons["横屏"].tap()
         expectation(for:NSPredicate { _,_ in app.frame.width>app.frame.height && !app.buttons["竖屏"].exists },evaluatedWith:surface);waitForExpectations(timeout:15)
         drag(0.8,0.7,0.8,0.3)
@@ -175,6 +177,10 @@ final class MobileUITests:XCTestCase {
         XCTAssertGreaterThan(app.frame.width,app.frame.height)
         XCTAssertFalse(app.buttons["竖屏"].exists)
         let landscape=XCTAttachment(screenshot:XCUIScreen.main.screenshot());landscape.name="09-swipe-landscape";landscape.lifetime = .keepAlways;add(landscape)
+        XCUIDevice.shared.press(.home);app.activate()
+        XCTAssertTrue(surface.waitForExistence(timeout:10))
+        XCTAssertTrue(app.buttons["播放"].waitForExistence(timeout:10),"回到播放器后应保持暂停且恢复控制栏")
+        app.buttons["播放"].tap()
         revealControls(app,button:"选集");app.buttons["选集"].tap()
         let last=app.buttons["episode-option-\(count-1)"]
         let grid=try XCTUnwrap(app.scrollViews.allElementsBoundByIndex.first { $0.isHittable })

@@ -26,6 +26,11 @@ public enum Playback {
     }
 }
 public enum Network {
+    private struct HTTPFailure:LocalizedError {
+        let status:Int
+        let retryAfter:String?
+        var errorDescription:String? { "内容请求失败（HTTP \(status)）" }
+    }
     public static let videoUA="com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
     static func validateRange(_ response:HTTPURLResponse,data:Data,start:Int64,end:Int64) throws -> Int64 {
         guard response.statusCode == 206,let text=response.value(forHTTPHeaderField:"Content-Range"),text.hasPrefix("bytes ") else { throw HongguoError.message("片源不支持分段读取") }
@@ -33,18 +38,25 @@ public enum Network {
         guard parts.count==2,range.count==2,let first=Int64(range[0]),let last=Int64(range[1]),let total=Int64(parts[1]),first==start,last==min(end,total-1),total>last,last>=first,Int64(data.count)==last-first+1 else { throw HongguoError.message("视频响应范围不一致") };return total
     }
     static func data(_ request:URLRequest,limit:Int=16*1024*1024,session:URLSession = .shared) async throws -> (Data,HTTPURLResponse) {
-        do { return try await read(request,limit:limit,session:session) }
-        catch {
+        var retries=0
+        while true {
             try Task.checkCancellation()
-            let reason=error as NSError
-            guard (request.httpMethod ?? "GET")=="GET",reason.domain==NSURLErrorDomain,[URLError.secureConnectionFailed.rawValue,URLError.networkConnectionLost.rawValue,URLError.timedOut.rawValue,URLError.cannotConnectToHost.rawValue].contains(reason.code) else { throw error }
-            try await Task.sleep(for:.milliseconds(300))
-            return try await read(request,limit:limit,session:session)
+            do { return try await read(request,limit:limit,session:session) }
+            catch {
+                try Task.checkCancellation()
+                let reason=error as NSError
+                let transientHTTP=(error as? HTTPFailure).map { [408,500,502,503,504].contains($0.status) && $0.retryAfter==nil } ?? false
+                let transientConnection=reason.domain==NSURLErrorDomain && [URLError.secureConnectionFailed,.networkConnectionLost,.timedOut,.cannotConnectToHost,.cannotFindHost,.dnsLookupFailed,.notConnectedToInternet].map(\.rawValue).contains(reason.code)
+                guard (request.httpMethod ?? "GET")=="GET",retries<2,transientHTTP || transientConnection else { throw error }
+                let delay=retries==0 ? 300:900;retries+=1
+                try await Task.sleep(for:.milliseconds(delay))
+            }
         }
     }
     private static func read(_ request:URLRequest,limit:Int,session:URLSession) async throws -> (Data,HTTPURLResponse) {
         let (bytes,response)=try await session.bytes(for:request)
-        guard let response=response as? HTTPURLResponse,(200...299).contains(response.statusCode) else { throw HongguoError.message("内容请求失败（HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)）") }
+        guard let response=response as? HTTPURLResponse else { throw HongguoError.message("内容响应格式异常") }
+        guard (200...299).contains(response.statusCode) else { throw HTTPFailure(status:response.statusCode,retryAfter:response.value(forHTTPHeaderField:"Retry-After")) }
         guard response.expectedContentLength<=limit else { throw HongguoError.message("内容响应过大") }
         var data=Data();data.reserveCapacity(Int(max(0,min(response.expectedContentLength,Int64(limit)))))
         for try await byte in bytes { if data.count>=limit { throw HongguoError.message("内容响应过大") };data.append(byte);if data.count&65535 == 0 { try Task.checkCancellation() } }

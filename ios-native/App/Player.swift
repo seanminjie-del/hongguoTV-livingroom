@@ -265,6 +265,7 @@ struct PlayerScreen:View {
                         bottomControls(landscape:landscape)
                     }.padding(.horizontal,landscape ? 20:12).padding(.leading,insets.left).padding(.trailing,insets.right).padding(.top,insets.top+8).padding(.bottom,insets.bottom+8)
                         .background(LinearGradient(colors:[.black.opacity(0.7),.clear,.black.opacity(0.8)],startPoint:.top,endPoint:.bottom))
+                        .opacity(dragOrigin==nil ? 1:0)
                         .transition(.opacity)
                 }
                 if session.loading,!session.silentContinuation { ProgressView("正在准备 \(session.quality)").padding(20).background(.ultraThinMaterial,in:RoundedRectangle(cornerRadius:16)) }
@@ -274,7 +275,6 @@ struct PlayerScreen:View {
                     let vertical=value.translation.height,horizontal=value.translation.width
                     guard acceptsSwipe(from:value.startLocation),abs(vertical)>abs(horizontal)*1.5 else { return }
                     if dragOrigin==nil { dragOrigin=session.index }
-                    controlsVisible=false
                     let target=session.index+(vertical<0 ? 1:-1)
                     dragOffset=session.detail.episodes.indices.contains(target) ? max(-geometry.size.height,min(geometry.size.height,vertical)):vertical*0.18
                 }.onEnded { value in
@@ -291,13 +291,13 @@ struct PlayerScreen:View {
         .statusBarHidden(true).persistentSystemOverlays(.hidden)
         .onAppear { previousIdleTimer=UIApplication.shared.isIdleTimerDisabled;UIApplication.shared.isIdleTimerDisabled=true;ScreenOrientation.select(.portrait) { orientationError=$0 } }
         .task { session.open(session.index) }
-        .task(id:"\(controlsVisible)|\(session.playing)|\(session.loading)|\(scrubbing)|\(showEpisodes)|\(showOptions)|\(interaction)") {
-            guard controlsVisible,session.playing,!session.loading,session.error==nil,!scrubbing,!showEpisodes,!showOptions,!voiceOver else { return }
+        .task(id:"\(controlsVisible)|\(session.playing)|\(session.loading)|\(scrubbing)|\(showEpisodes)|\(showOptions)|\(interaction)|\(dragOrigin != nil)") {
+            guard controlsVisible,session.playing,!session.loading,session.error==nil,!scrubbing,!showEpisodes,!showOptions,!voiceOver,dragOrigin==nil else { return }
             do { try await Task.sleep(for:.seconds(4));try Task.checkCancellation();withAnimation(.easeOut(duration:0.2)) { controlsVisible=false } } catch { }
         }
         .onChange(of:session.index) { _,_ in controlsVisible = !session.silentContinuation;scrubbing=false }
         .onDisappear { session.close();UIApplication.shared.isIdleTimerDisabled=previousIdleTimer;ScreenOrientation.select(.portrait) { _ in } }
-        .onChange(of:phase) { _,value in if value != .active { session.suspend();controlsVisible=true } }
+        .onChange(of:phase) { _,value in if value != .active { dragOffset=0;dragOrigin=nil;session.suspend();controlsVisible=true } }
         .sheet(isPresented:$showEpisodes) { EpisodeSheet(detail:session.detail,current:session.index) { session.open($0,resume:false);showEpisodes=false } }
         .confirmationDialog("播放设置",isPresented:$showOptions,titleVisibility:.visible) {
             ForEach([0.75,1.0,1.25,1.5,2.0],id:\.self) { rate in Button("\(rate.formatted())×") { session.setSpeed(Float(rate)) } }
